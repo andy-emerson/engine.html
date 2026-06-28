@@ -1,8 +1,9 @@
-# Gamengine
+# LoveIDE
 
 A single-file, in-browser IDE for authoring **LÖVE (Love2D)** games — a
 notebook-style view over a real `main.lua` with a live love.js preview. The
-whole app is one file, `engine.html`.
+whole app is one file, `engine.html`. (An independent community tool, not
+affiliated with or endorsed by the LÖVE project.)
 
 Open `engine.html` in a browser. No build step, no install.
 
