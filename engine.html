@@ -60,14 +60,15 @@
   --fn-danger:  #d73a49; --fn-danger-bg:  rgba(215,58,73,.11);
   --fn-working: #b07d00; --fn-working-bg: rgba(176,125,0,.13); --fn-working-border: rgba(176,125,0,.35);
 
-  /* cell-type colors — Lua (LÖVE pink) + Markdown (terracotta) */
-  --type-lua-bg: #FBE6F1; --type-lua-fg: #8C1A55;
-  --type-md-bg:  #FAEAE4; --type-md-fg:  #7C2D12;
-
-  /* LoveIDE brand — light/dark agnostic: hot-pink "Love" + slate "IDE".
+  /* LoveIDE brand — light/dark agnostic: hot-pink "Love" + steel "IDE".
      Both read on light and dark backgrounds, so no per-theme override. */
   --brand-love: #EC4899;
-  --brand-ide:  #708090;
+  --brand-ide:  #7C8A99;
+
+  /* cell-type colors share the brand: Lua = pink, Markdown = steel. Tints use
+     color-mix with transparent so they work on light and dark backgrounds. */
+  --type-lua-bg: color-mix(in srgb, var(--brand-love) 15%, transparent); --type-lua-fg: var(--brand-love);
+  --type-md-bg:  color-mix(in srgb, var(--brand-ide) 20%, transparent);  --type-md-fg:  var(--brand-ide);
 }
 [data-theme="ember"], [data-theme="dusk"], [data-theme="carbon"] {
   --fn-execute: #6ba3e8; --fn-execute-bg: rgba(107,163,232,.15); --fn-execute-border: rgba(107,163,232,.40);
@@ -95,7 +96,6 @@
   --text-info:#c09030; --text-danger:#c86858; --text-success:#88a060;
   --border-faint:rgba(200,191,176,.10); --border-light:rgba(200,191,176,.18); --border-medium:rgba(200,191,176,.28); --border-info:#c09850;
   --syntax-keyword:#caa040; --syntax-string:#c07848; --syntax-operator:#a08870;
-  --type-lua-bg:#3B0A2A; --type-lua-fg:#F49AC8; --type-md-bg:#3B0F0A; --type-md-fg:#F4A89A;
 }
 [data-theme="dusk"] {
   --bg-primary:#1f2120; --bg-secondary:#191919; --bg-tertiary:#272928; --bg-info:#21271f;
@@ -103,7 +103,6 @@
   --text-info:#5a8050; --text-danger:#b07068; --text-success:#6a9050;
   --border-faint:rgba(190,192,182,.10); --border-light:rgba(190,192,182,.18); --border-medium:rgba(190,192,182,.28); --border-info:#587050;
   --syntax-keyword:#88a850; --syntax-string:#b0a040; --syntax-operator:#748060;
-  --type-lua-bg:#2A0A22; --type-lua-fg:#E090BE; --type-md-bg:#3B0F0A; --type-md-fg:#F4A89A;
 }
 [data-theme="cloud"] {
   --bg-primary:#f5f5f5; --bg-secondary:#ebebeb; --bg-tertiary:#dcdcdc; --bg-info:#e4e4e4;
@@ -111,7 +110,6 @@
   --text-info:#484848; --text-danger:#884040; --text-success:#487040;
   --border-faint:rgba(40,40,40,.10); --border-light:rgba(40,40,40,.18); --border-medium:rgba(40,40,40,.28); --border-info:#787878;
   --syntax-keyword:#181818; --syntax-string:#606060; --syntax-operator:#7a7a7a;
-  --type-lua-bg:#e7e0e4; --type-lua-fg:#7a4860; --type-md-bg:#e8e0dc; --type-md-fg:#7a5048;
 }
 [data-theme="carbon"] {
   --bg-primary:#202020; --bg-secondary:#181818; --bg-tertiary:#2a2a2a; --bg-info:#242424;
@@ -119,7 +117,6 @@
   --text-info:#a0a0a0; --text-danger:#c07878; --text-success:#80a878;
   --border-faint:rgba(200,200,200,.10); --border-light:rgba(200,200,200,.18); --border-medium:rgba(200,200,200,.28); --border-info:#808080;
   --syntax-keyword:#e0e0e0; --syntax-string:#a0a0a0; --syntax-operator:#787878;
-  --type-lua-bg:#2c242a; --type-lua-fg:#c898b4; --type-md-bg:#2c2424; --type-md-fg:#c89898;
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -166,7 +163,7 @@ body { font-family: var(--font-sans); background: var(--bg-tertiary); color: var
 .tb-btn { background: none; border: .5px solid var(--border-light); border-radius: var(--radius-md); padding: 6px 10px; font-size: 12px; font-family: var(--font-sans); color: var(--text-secondary); cursor: pointer; display: flex; align-items: center; gap: 5px; transition: background .12s, color .12s; white-space: nowrap; }
 .tb-btn:hover { background: var(--bg-secondary); color: var(--text-primary); }
 .tb-btn.primary { background: var(--fn-execute-bg); border-color: transparent; color: var(--fn-execute); }
-.tb-btn.run { background: var(--type-lua-bg); border-color: transparent; color: var(--type-lua-fg); font-weight: 600; }
+.tb-btn.run { background: var(--brand-love); border-color: transparent; color: #fff; font-weight: 600; }
 .tb-btn.run:hover { filter: brightness(.97); opacity: .92; }
 .tb-btn.danger { background: var(--fn-danger-bg); border-color: transparent; color: var(--fn-danger); }
 .tb-btn svg { width: 14px; height: 14px; flex-shrink: 0; }
@@ -1581,8 +1578,8 @@ function registerIsolationSW(){
 
 function boot(){
   try { nb.opts = Object.assign(nb.opts, JSON.parse(lsGet(LS.opts,'{}'))); } catch(e){}
-  $('#logo-mark').innerHTML=brandSVG(26);
-  setFavicon();
+  // Logo mark + favicon shelved for now (brandSVG/setFavicon kept for later).
+  const lm=$('#logo-mark'); if(lm) lm.remove();
   $('#placeholder-icon').innerHTML=`<svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${I.play}</svg>`;
   paintIcons();
   applyTheme();
