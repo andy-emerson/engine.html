@@ -268,6 +268,46 @@ body { font-family: var(--font-sans); background: var(--bg-tertiary); color: var
 .seg button:hover:not(.active) { color: var(--text-primary); }
 .setting-toggle { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--text-secondary); }
 
+/* activity bar: push a button to the bottom (Settings) */
+.act-bottom { margin-top: auto; }
+
+/* outline */
+.ol-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.ol-dot.lua { background: var(--type-lua-fg); }
+.ol-dot.md  { background: var(--type-md-fg); }
+@keyframes cellflash { 0%,100% { box-shadow: 0 0 0 0 transparent; } 30% { box-shadow: 0 0 0 2px var(--border-info); } }
+.cell.flash { animation: cellflash .7s ease; }
+
+/* library + api rows */
+.kv-row { display: flex; flex-direction: column; gap: 2px; padding: 7px 12px; border-bottom: .5px solid var(--border-faint); }
+.kv-top { display: flex; align-items: center; gap: 8px; }
+.kv-name { font-family: var(--font-mono); font-size: 12px; color: var(--text-primary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kv-desc { font-size: 11px; color: var(--text-tertiary); line-height: 1.4; }
+.kv-btn { flex-shrink: 0; border: .5px solid var(--border-light); background: var(--bg-secondary); color: var(--text-secondary); border-radius: 5px; font-size: 11px; padding: 3px 8px; cursor: pointer; display: flex; align-items: center; gap: 4px; }
+.kv-btn:hover { color: var(--text-primary); border-color: var(--border-info); }
+.kv-btn.added { color: var(--fn-success); border-color: transparent; background: var(--fn-success-bg); }
+.kv-btn.busy { opacity: .6; pointer-events: none; }
+.kv-btn svg { width: 12px; height: 12px; }
+.api-group { font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-tertiary); padding: 8px 12px 3px; position: sticky; top: 0; background: var(--bg-primary); }
+.api-row { display: flex; align-items: center; gap: 6px; padding: 4px 12px; cursor: pointer; font-family: var(--font-mono); font-size: 11.5px; color: var(--text-secondary); }
+.api-row:hover { background: var(--bg-secondary); color: var(--text-primary); }
+.api-row .sig { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.api-row .ins { opacity: 0; color: var(--text-tertiary); display: flex; }
+.api-row:hover .ins { opacity: 1; }
+
+/* assistant chat */
+.chat-msgs { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 12px; }
+.chat-msg { font-size: 12px; line-height: 1.5; padding: 7px 9px; border-radius: 8px; white-space: pre-wrap; word-break: break-word; max-width: 94%; }
+.chat-msg.user { background: var(--bg-tertiary); color: var(--text-primary); align-self: flex-end; }
+.chat-msg.bot { background: var(--bg-secondary); color: var(--text-primary); align-self: flex-start; }
+.chat-msg.sys { color: var(--text-tertiary); font-style: italic; align-self: center; text-align: center; font-size: 11px; }
+.chat-input { display: flex; gap: 5px; padding: 8px; border-top: .5px solid var(--border-faint); }
+.chat-input textarea { flex: 1; resize: none; font-family: inherit; font-size: 12px; line-height: 1.4; padding: 6px 8px; border-radius: 6px; border: .5px solid var(--border-light); background: var(--bg-secondary); color: var(--text-primary); outline: none; max-height: 110px; }
+.chat-input button { flex-shrink: 0; border: none; background: var(--fn-execute-bg); color: var(--fn-execute); border-radius: 6px; padding: 0 10px; cursor: pointer; display: flex; align-items: center; }
+.chat-setup { padding: 16px; display: flex; flex-direction: column; gap: 10px; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
+.chat-setup select { padding: 5px 8px; border:.5px solid var(--border-light); border-radius:6px; background:var(--bg-secondary); color:var(--text-primary); font-size:12px; }
+.chat-setup .secrets-btn, .chat-setup button.load { padding: 7px 10px; border-radius: 6px; border: .5px solid transparent; background: var(--fn-execute-bg); color: var(--fn-execute); font-size: 12px; cursor: pointer; }
+
 /* ════════════════════════════════════════════════════════════════════════════
  * 8. PREVIEW (right pane)
  * ════════════════════════════════════════════════════════════════════════════ */
@@ -360,8 +400,12 @@ input[type=file] { display: none; }
     <!-- left activity bar -->
     <div id="left-activity-bar" class="activity-bar">
       <button class="activity-bar-btn active" data-tab="assets" title="Assets" data-ico="assets"></button>
+      <button class="activity-bar-btn" data-tab="outline" title="Outline" data-ico="list"></button>
+      <button class="activity-bar-btn" data-tab="libs" title="Libraries" data-ico="package"></button>
+      <button class="activity-bar-btn" data-tab="api" title="LÖVE API" data-ico="book"></button>
+      <button class="activity-bar-btn" data-tab="assistant" title="AI assistant" data-ico="spark"></button>
       <button class="activity-bar-btn" data-tab="history" title="History" data-ico="history"></button>
-      <button class="activity-bar-btn" data-tab="settings" title="Settings" data-ico="settings"></button>
+      <button class="activity-bar-btn act-bottom" data-tab="settings" title="Settings" data-ico="settings"></button>
     </div>
 
     <!-- left pane -->
@@ -369,6 +413,24 @@ input[type=file] { display: none; }
       <div class="pane-panel active" id="panel-assets" data-tab="assets">
         <div class="pane-header">Assets <span class="mini" id="add-asset" title="Add asset(s)" data-ico="plus"></span></div>
         <div id="asset-list" style="flex:1;overflow-y:auto"></div>
+      </div>
+      <div class="pane-panel" id="panel-outline" data-tab="outline">
+        <div class="pane-header">Outline</div>
+        <div id="outline-list" style="flex:1;overflow-y:auto"></div>
+      </div>
+      <div class="pane-panel" id="panel-libs" data-tab="libs">
+        <div class="pane-header">Lua libraries</div>
+        <div style="padding:8px 12px;color:var(--text-tertiary);font-size:11px;line-height:1.5">Added libraries are vendored into the <code>.love</code> at <code>lib/</code>. Use e.g. <code>local bump = require('lib.bump')</code>.</div>
+        <div id="lib-list" style="flex:1;overflow-y:auto"></div>
+      </div>
+      <div class="pane-panel" id="panel-api" data-tab="api">
+        <div class="pane-header">LÖVE API</div>
+        <div style="padding:8px 12px"><input id="api-search" placeholder="Search love.* …" style="width:100%;padding:5px 8px;border:.5px solid var(--border-light);border-radius:6px;background:var(--bg-secondary);color:var(--text-primary);font-size:12px;outline:none"></div>
+        <div id="api-list" style="flex:1;overflow-y:auto"></div>
+      </div>
+      <div class="pane-panel" id="panel-assistant" data-tab="assistant">
+        <div class="pane-header">AI assistant</div>
+        <div id="assistant-body" style="flex:1;min-height:0;display:flex;flex-direction:column"></div>
       </div>
       <div class="pane-panel" id="panel-history" data-tab="history">
         <div class="pane-header">History <span class="mini" id="snap-now" title="Snapshot now" data-ico="plus"></span></div>
@@ -465,6 +527,12 @@ const I = {
   terminal:'<path d="M5 7l5 5-5 5M13 17h6"/>', sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4 12H2M22 12h-2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19"/>',
   moon:'<path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/>', auto:'<circle cx="12" cy="12" r="9"/><path d="M12 3v18" fill="currentColor" stroke="none" opacity="0.35"/>',
   dot:'<circle cx="12" cy="12" r="5"/>', love:'<path d="M12 21s-7-4.5-9.3-9C1 8.6 2.6 5 6 5c2 0 3.2 1.2 4 2.5C10.8 6.2 12 5 14 5c3.4 0 5 3.6 3.3 7-2.3 4.5-9.3 9-9.3 9z"/>',
+  list:'<path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/>',
+  package:'<path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M3.3 7L12 12l8.7-5M12 22V12"/>',
+  book:'<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>',
+  spark:'<path d="M12 3l1.7 4.5L18 9l-4.3 1.5L12 15l-1.7-4.5L6 9l4.3-1.5L12 3z"/><path d="M18.5 14l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2z"/>',
+  search:'<circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/>',
+  insert:'<path d="M12 5v14M5 12h14"/>', send:'<path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>',
 };
 function svg(name, cls) {
   return `<svg class="${cls||''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${I[name]||''}</svg>`;
@@ -834,7 +902,7 @@ async function upgradeEditor(cellEl, cell){
       keymap.of([ ...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap, indentWithTab ]),
       EditorView.updateListener.of(u=>{
         if (u.docChanged){ cell.code=u.state.doc.toString(); setDirty(true); saveSoon(); updateCellTitle(cellEl,cell); }
-        if (u.focusChanged) cellEl.classList.toggle('focused', u.view.hasFocus);
+        if (u.focusChanged){ cellEl.classList.toggle('focused', u.view.hasFocus); if (u.view.hasFocus) nb.editor.lastFocus=cell.id; }
       }),
     ],
     parent: wrap,
@@ -858,7 +926,10 @@ function firstLine(s){ const l=(s||'').split('\n').find(x=>x.trim()); return (l|
 function updateCellTitle(cellEl, cell){
   const t=cellEl.querySelector('.cell-title');
   if (t) t.textContent = cell.type==='md' ? firstLine(cell.code).replace(/^#+\s*/,'') : firstLine(cell.code);
+  renderOutlineSoon();
 }
+let _outlineTimer=null;
+function renderOutlineSoon(){ clearTimeout(_outlineTimer); _outlineTimer=setTimeout(renderOutline,250); }
 // Insert zones compute their index from DOM position (count .cell nodes before
 // them), so they stay correct after in-place drag reordering.
 function createInsertZone(){
@@ -894,13 +965,14 @@ function createCellEl(cell){
   if (cell.type==='lua'){
     const ta=elem('textarea',{spellcheck:'false'}); ta.value=cell.code;
     ta.addEventListener('input',()=>{ cell.code=ta.value; autosize(ta); setDirty(true); saveSoon(); updateCellTitle(cellEl,cell); });
-    ta.addEventListener('focus',()=>cellEl.classList.add('focused'));
+    ta.addEventListener('focus',()=>{ cellEl.classList.add('focused'); nb.editor.lastFocus=cell.id; });
     ta.addEventListener('blur',()=>cellEl.classList.remove('focused'));
     ta.addEventListener('keydown',e=>editorKeys(e,ta,cell));
     body.appendChild(ta); setTimeout(()=>autosize(ta),0);
     setTimeout(()=>upgradeEditor(cellEl,cell),0);
   } else {
     const ta=elem('textarea',{spellcheck:'false'}); ta.value=cell.code;
+    ta.addEventListener('focus',()=>{ nb.editor.lastFocus=cell.id; });
     ta.addEventListener('input',()=>{ cell.code=ta.value; autosize(ta); setDirty(true); saveSoon(); });
     ta.addEventListener('blur',()=>{ cell.code=ta.value; renderMd(cellEl,cell); setDirty(true); saveSoon(); updateCellTitle(cellEl,cell); });
     ta.addEventListener('keydown',e=>editorKeys(e,ta,cell));
@@ -944,6 +1016,7 @@ function renderNotebook(){
     scroll.appendChild(createInsertZone());
   });
   $('#st-cells').textContent = nb.doc.cells.length+' cell'+(nb.doc.cells.length===1?'':'s');
+  renderOutline();
   saveSoon();
 }
 
@@ -1061,6 +1134,232 @@ function collapseAll(){
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
+ * 6b. ACTIVITY-BAR PANELS — Outline, Lua libraries, LÖVE API reference
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+/* ── Outline / navigator ── */
+function renderOutline(){
+  const wrap=$('#outline-list'); if(!wrap) return; wrap.innerHTML='';
+  if(!nb.doc.cells.length){ wrap.appendChild(elem('div',{class:'pane-empty',text:'No cells'})); return; }
+  nb.doc.cells.forEach((c,i)=>{
+    const label = c.type==='md' ? (firstLine(c.code).replace(/^#+\s*/,'')||'Markdown') : (firstLine(c.code)||'(empty)');
+    const row=elem('div',{class:'list-row clickable',title:label},[
+      elem('span',{class:'ol-dot '+c.type}),
+      elem('span',{class:'grow mono',text:label}),
+      elem('span',{class:'sub',text:String(i+1)}),
+    ]);
+    row.onclick=()=>{ const el=$(`.cell[data-id="${c.id}"]`); if(el){ el.scrollIntoView({behavior:'smooth',block:'center'}); el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); setTimeout(()=>el.classList.remove('flash'),750); } };
+    wrap.appendChild(row);
+  });
+}
+
+/* ── Lua libraries — curated single-file LÖVE libs, vendored into the .love ── */
+const LIB_REGISTRY = [
+  { id:'bump',     name:'bump.lua',       desc:'AABB collision detection',          url:'https://cdn.jsdelivr.net/gh/kikito/bump.lua/bump.lua' },
+  { id:'anim8',    name:'anim8',          desc:'Sprite-sheet animation',            url:'https://cdn.jsdelivr.net/gh/kikito/anim8/anim8.lua' },
+  { id:'tween',    name:'tween.lua',      desc:'Tweening / easing',                 url:'https://cdn.jsdelivr.net/gh/kikito/tween.lua/tween.lua' },
+  { id:'flux',     name:'flux',           desc:'Fast, lightweight tweening',        url:'https://cdn.jsdelivr.net/gh/rxi/flux/flux.lua' },
+  { id:'classic',  name:'classic',        desc:'Tiny OOP / classes',                url:'https://cdn.jsdelivr.net/gh/rxi/classic/classic.lua' },
+  { id:'lume',     name:'lume',           desc:'General-purpose utilities',         url:'https://cdn.jsdelivr.net/gh/rxi/lume/lume.lua' },
+  { id:'json',     name:'json.lua',       desc:'JSON encode / decode',              url:'https://cdn.jsdelivr.net/gh/rxi/json.lua/json.lua' },
+  { id:'baton',    name:'baton',          desc:'Input (keyboard + gamepad)',        url:'https://cdn.jsdelivr.net/gh/tesselode/baton/baton.lua' },
+  { id:'vector',   name:'hump.vector',    desc:'2D vector math (HUMP)',             url:'https://cdn.jsdelivr.net/gh/vrld/hump/vector.lua', path:'lib/vector.lua' },
+  { id:'timer',    name:'hump.timer',     desc:'Timers & tweens (HUMP)',            url:'https://cdn.jsdelivr.net/gh/vrld/hump/timer.lua', path:'lib/timer.lua' },
+  { id:'camera',   name:'hump.camera',    desc:'2D camera (HUMP)',                  url:'https://cdn.jsdelivr.net/gh/vrld/hump/camera.lua', path:'lib/camera.lua' },
+  { id:'gamestate',name:'hump.gamestate', desc:'Game-state stack (HUMP)',           url:'https://cdn.jsdelivr.net/gh/vrld/hump/gamestate.lua', path:'lib/gamestate.lua' },
+];
+function libPath(e){ return e.path || ('lib/'+e.id+'.lua'); }
+function libRequire(e){ return libPath(e).replace(/^/,'').replace(/\.lua$/,'').replace(/\//g,'.'); }
+function readLibs(){ try { return JSON.parse(lsGet('engine.html:libs','[]')); } catch(e){ return []; } }
+function writeLibs(l){ lsSet('engine.html:libs', JSON.stringify(l)); renderLibs(); }
+function renderLibs(){
+  const wrap=$('#lib-list'); if(!wrap) return; wrap.innerHTML='';
+  const installed=new Set(readLibs().map(l=>l.id));
+  LIB_REGISTRY.forEach(e=>{
+    const added=installed.has(e.id);
+    const btn=elem('button',{class:'kv-btn'+(added?' added':''),html:added?(svg('check')+'Added'):(svg('plus')+'Add')});
+    btn.onclick=()=> added ? removeLib(e.id) : addLib(e, btn);
+    const row=elem('div',{class:'kv-row'},[
+      elem('div',{class:'kv-top'},[ elem('span',{class:'kv-name',text:e.name}), btn ]),
+      elem('div',{class:'kv-desc',text:e.desc+'  ·  require("'+libRequire(e)+'")'}),
+    ]);
+    wrap.appendChild(row);
+  });
+}
+async function addLib(e, btn){
+  if (btn){ btn.classList.add('busy'); btn.innerHTML=svg('package')+'…'; }
+  try {
+    const res=await fetch(e.url);
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const code=await res.text();
+    const libs=readLibs();
+    if(!libs.find(l=>l.id===e.id)){ libs.push({ id:e.id, name:e.name, path:libPath(e), code }); writeLibs(libs); }
+    toast(e.name+' added ('+fmtBytes(code.length)+')');
+  } catch(err){ if(btn) btn.classList.remove('busy'); renderLibs(); toast('Failed to add '+e.name+': '+(err.message||err)); }
+}
+function removeLib(id){ writeLibs(readLibs().filter(l=>l.id!==id)); }
+
+/* ── LÖVE API reference — curated, click-to-insert at the cursor ── */
+const API_DATA = [
+  ['graphics','love.graphics.rectangle',"(mode, x, y, w, h)","love.graphics.rectangle('fill', x, y, w, h)"],
+  ['graphics','love.graphics.circle',"(mode, x, y, radius)","love.graphics.circle('fill', x, y, r)"],
+  ['graphics','love.graphics.line',"(x1, y1, x2, y2, ...)","love.graphics.line(x1, y1, x2, y2)"],
+  ['graphics','love.graphics.polygon',"(mode, vertices)","love.graphics.polygon('fill', x1,y1, x2,y2, x3,y3)"],
+  ['graphics','love.graphics.print',"(text, x, y, r, sx, sy)","love.graphics.print(text, x, y)"],
+  ['graphics','love.graphics.printf',"(text, x, y, limit, align)","love.graphics.printf(text, x, y, limit, 'center')"],
+  ['graphics','love.graphics.setColor',"(r, g, b, a)","love.graphics.setColor(1, 1, 1, 1)"],
+  ['graphics','love.graphics.clear',"(r, g, b, a)","love.graphics.clear(0.1, 0.1, 0.1)"],
+  ['graphics','love.graphics.draw',"(drawable, x, y, r, sx, sy, ox, oy)","love.graphics.draw(image, x, y)"],
+  ['graphics','love.graphics.newImage',"(filename) -> Image","local img = love.graphics.newImage('sprite.png')"],
+  ['graphics','love.graphics.newFont',"(filename, size) -> Font","local font = love.graphics.newFont(14)"],
+  ['graphics','love.graphics.setFont',"(font)","love.graphics.setFont(font)"],
+  ['graphics','love.graphics.newQuad',"(x, y, w, h, sw, sh) -> Quad","local q = love.graphics.newQuad(0, 0, 16, 16, image:getWidth(), image:getHeight())"],
+  ['graphics','love.graphics.push',"()","love.graphics.push()"],
+  ['graphics','love.graphics.pop',"()","love.graphics.pop()"],
+  ['graphics','love.graphics.translate',"(dx, dy)","love.graphics.translate(dx, dy)"],
+  ['graphics','love.graphics.rotate',"(angle)","love.graphics.rotate(angle)"],
+  ['graphics','love.graphics.scale',"(sx, sy)","love.graphics.scale(sx, sy)"],
+  ['graphics','love.graphics.getWidth',"() -> w","local w = love.graphics.getWidth()"],
+  ['graphics','love.graphics.getHeight',"() -> h","local h = love.graphics.getHeight()"],
+  ['callbacks','love.load',"()","function love.load()\n  \nend"],
+  ['callbacks','love.update',"(dt)","function love.update(dt)\n  \nend"],
+  ['callbacks','love.draw',"()","function love.draw()\n  \nend"],
+  ['callbacks','love.keypressed',"(key, scancode, isrepeat)","function love.keypressed(key)\n  \nend"],
+  ['callbacks','love.keyreleased',"(key)","function love.keyreleased(key)\n  \nend"],
+  ['callbacks','love.mousepressed',"(x, y, button)","function love.mousepressed(x, y, button)\n  \nend"],
+  ['callbacks','love.mousemoved',"(x, y, dx, dy)","function love.mousemoved(x, y, dx, dy)\n  \nend"],
+  ['callbacks','love.resize',"(w, h)","function love.resize(w, h)\n  \nend"],
+  ['keyboard','love.keyboard.isDown',"(key) -> bool","love.keyboard.isDown('left')"],
+  ['mouse','love.mouse.getPosition',"() -> x, y","local mx, my = love.mouse.getPosition()"],
+  ['mouse','love.mouse.isDown',"(button) -> bool","love.mouse.isDown(1)"],
+  ['audio','love.audio.newSource',"(filename, type) -> Source","local snd = love.audio.newSource('beep.wav', 'static')"],
+  ['audio','love.audio.play',"(source)","love.audio.play(snd)"],
+  ['math','love.math.random',"(min, max) -> n","love.math.random(1, 6)"],
+  ['math','love.math.noise',"(x, y) -> n","love.math.noise(x, y)"],
+  ['timer','love.timer.getFPS',"() -> fps","love.timer.getFPS()"],
+  ['timer','love.timer.getTime',"() -> seconds","love.timer.getTime()"],
+  ['window','love.window.setTitle',"(title)","love.window.setTitle('My Game')"],
+  ['window','love.window.setMode',"(w, h, flags)","love.window.setMode(800, 600)"],
+  ['physics','love.physics.newWorld',"(gx, gy, sleep) -> World","local world = love.physics.newWorld(0, 9.81*64, true)"],
+  ['filesystem','love.filesystem.read',"(name) -> contents","local data = love.filesystem.read('save.txt')"],
+  ['filesystem','love.filesystem.write',"(name, data)","love.filesystem.write('save.txt', data)"],
+];
+function renderApi(filter){
+  const wrap=$('#api-list'); if(!wrap) return; wrap.innerHTML='';
+  const f=(filter||'').trim().toLowerCase();
+  const rows=API_DATA.filter(r=> !f || (r[1]+' '+r[2]).toLowerCase().includes(f));
+  if(!rows.length){ wrap.appendChild(elem('div',{class:'pane-empty',text:'No matches'})); return; }
+  let lastGroup=null;
+  rows.forEach(r=>{
+    if(r[0]!==lastGroup){ lastGroup=r[0]; wrap.appendChild(elem('div',{class:'api-group',text:r[0]})); }
+    const row=elem('div',{class:'api-row',title:'Insert: '+r[3]},[
+      elem('span',{class:'sig',html:'<b style="color:var(--type-lua-fg);font-weight:600">'+escapeHtml(r[1])+'</b> '+escapeHtml(r[2])}),
+      elem('span',{class:'ins',html:svg('insert')}),
+    ]);
+    row.onclick=()=>{ if(insertSnippet(r[3])) toast('Inserted'); };
+    wrap.appendChild(row);
+  });
+}
+function insertSnippet(text){
+  const id=nb.editor.lastFocus;
+  const view=id!=null && nb.editor.views.get(id);
+  if(view){ const sel=view.state.selection.main; view.dispatch({ changes:{from:sel.from,to:sel.to,insert:text}, selection:{anchor:sel.from+text.length} }); view.focus(); setDirty(true); saveSoon(); return true; }
+  const ta=id!=null && $(`.cell[data-id="${id}"] textarea`);
+  if(ta){ const s=ta.selectionStart,e=ta.selectionEnd; ta.value=ta.value.slice(0,s)+text+ta.value.slice(e); ta.selectionStart=ta.selectionEnd=s+text.length; ta.dispatchEvent(new Event('input')); ta.focus(); return true; }
+  if(navigator.clipboard) navigator.clipboard.writeText(text);
+  toast('Copied (focus a Lua cell to insert)'); return false;
+}
+
+/* ── AI assistant — in-browser LLM via WebLLM (ported from the oracle's Agent) ──
+ * Runs a small model locally with WebGPU (no API key, no server). The model is
+ * downloaded once on first use and cached by the browser. CDN + WebGPU required;
+ * not testable in this sandbox, so it degrades to a clear setup/empty state. */
+const AST = { engine:null, model:null, busy:false, msgs:[] };
+const AST_MODELS = [
+  { id:'Qwen2.5-Coder-1.5B-Instruct-q4f16_1-MLC', label:'Qwen2.5 Coder 1.5B (best for code, ~1.2 GB)' },
+  { id:'Llama-3.2-1B-Instruct-q4f16_1-MLC',       label:'Llama 3.2 1B (general, ~0.9 GB)' },
+  { id:'Qwen2.5-0.5B-Instruct-q4f16_1-MLC',       label:'Qwen2.5 0.5B (tiny/fast, ~0.5 GB)' },
+];
+function initAssistant(){
+  const body=$('#assistant-body'); if(!body) return;
+  if (AST.engine){ renderAssistantChat(); return; }
+  body.innerHTML='';
+  if (!('gpu' in navigator)){
+    body.appendChild(elem('div',{class:'chat-setup'},[
+      elem('div',{html:'<b>WebGPU not available.</b>'}),
+      elem('div',{text:'The local AI assistant needs WebGPU. Try a recent Chrome/Edge (or enable WebGPU). Everything else in Gamengine works without it.'}),
+    ]));
+    return;
+  }
+  const sel=elem('select');
+  AST_MODELS.forEach(m=>sel.appendChild(elem('option',{value:m.id,text:m.label})));
+  const status=elem('div',{class:'chat-msg sys',text:''}); status.style.display='none';
+  const loadBtn=elem('button',{class:'load',text:'Load model'});
+  loadBtn.onclick=()=>loadAssistant(sel.value, status, loadBtn);
+  body.appendChild(elem('div',{class:'chat-setup'},[
+    elem('div',{html:'Runs a small language model <b>locally in your browser</b> (WebGPU, no API key). Downloaded once, then cached. It can see your <code>main.lua</code> and help with LÖVE/Lua.'}),
+    elem('div',{class:'settings-label',text:'Model'}), sel, loadBtn, status,
+  ]));
+}
+async function loadAssistant(modelId, status, btn){
+  status.style.display=''; status.textContent='Loading WebLLM…'; if(btn){ btn.disabled=true; btn.textContent='Loading…'; }
+  try {
+    const webllm=await import('https://esm.run/@mlc-ai/web-llm');
+    AST.engine=await webllm.CreateMLCEngine(modelId, { initProgressCallback:p=>{ status.textContent=p.text||('Loading '+modelId+'…'); } });
+    AST.model=modelId;
+    AST.msgs=[];
+    renderAssistantChat();
+    toast('Assistant ready');
+  } catch(e){
+    status.textContent='Failed to load: '+(e.message||e);
+    if(btn){ btn.disabled=false; btn.textContent='Retry'; }
+  }
+}
+function renderAssistantChat(){
+  const body=$('#assistant-body'); body.innerHTML='';
+  const msgs=elem('div',{class:'chat-msgs'});
+  const ta=elem('textarea',{rows:'2',placeholder:'Ask about your game…'});
+  const send=elem('button',{html:svg('send'),title:'Send'});
+  AST._msgsEl=msgs;
+  if(!AST.msgs.length) msgs.appendChild(elem('div',{class:'chat-msg sys',text:AST.model+' · ready'}));
+  AST.msgs.forEach(m=>msgs.appendChild(renderChatMsg(m.role,m.content)));
+  const submit=()=>{ const v=ta.value.trim(); if(v && !AST.busy){ ta.value=''; assistantSend(v); } };
+  send.onclick=submit;
+  ta.addEventListener('keydown',e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); submit(); } });
+  body.appendChild(msgs);
+  body.appendChild(elem('div',{class:'chat-input'},[ta,send]));
+  msgs.scrollTop=msgs.scrollHeight;
+}
+function renderChatMsg(role, content){
+  const el=elem('div',{class:'chat-msg '+(role==='user'?'user':'bot')});
+  el.innerHTML = role==='user' ? escapeHtml(content) : renderMarkdownHTML(content);
+  if (role!=='user'){
+    const m=/```lua\s*([\s\S]*?)```/.exec(content);
+    if (m){ const b=elem('button',{class:'kv-btn',html:svg('insert')+'Insert as cell',style:'margin-top:6px'}); b.onclick=()=>{ addCell('lua'); const c=nb.doc.cells[nb.doc.cells.length-1]; c.code=m[1].replace(/\s+$/,''); renderNotebook(); toast('Inserted as new cell'); }; el.appendChild(b); }
+  }
+  return el;
+}
+async function assistantSend(text){
+  AST.busy=true;
+  AST.msgs.push({role:'user',content:text});
+  AST._msgsEl.appendChild(renderChatMsg('user',text));
+  const botEl=elem('div',{class:'chat-msg bot',text:'…'});
+  AST._msgsEl.appendChild(botEl); AST._msgsEl.scrollTop=AST._msgsEl.scrollHeight;
+  const sys="You are a concise expert assistant for LÖVE (Love2D) game development in Lua. The user's whole game is the main.lua shown below. Prefer short answers; when giving code, use ```lua fenced blocks and write idiomatic LÖVE.";
+  const ctx="Current main.lua:\n```lua\n"+serialize(nb.doc).slice(0,6000)+"\n```";
+  const messages=[{role:'system',content:sys+"\n\n"+ctx}, ...AST.msgs.slice(-8)];
+  try {
+    const stream=await AST.engine.chat.completions.create({ messages, stream:true, temperature:0.4 });
+    let acc='';
+    for await (const chunk of stream){ acc += (chunk.choices && chunk.choices[0]?.delta?.content) || ''; botEl.textContent=acc; AST._msgsEl.scrollTop=AST._msgsEl.scrollHeight; }
+    AST.msgs.push({role:'assistant',content:acc});
+    const rendered=renderChatMsg('assistant',acc); botEl.replaceWith(rendered);
+  } catch(e){
+    botEl.classList.add('sys'); botEl.textContent='Error: '+(e.message||e);
+  } finally { AST.busy=false; AST._msgsEl.scrollTop=AST._msgsEl.scrollHeight; }
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
  * 7. RUNTIME — build a .love in-browser, boot it with 2dengine/love.js.
  *
  *   love.js needs SharedArrayBuffer => the page must be cross-origin isolated.
@@ -1096,6 +1395,7 @@ async function buildLoveBlob(){
   const zip=new JSZip();
   zip.file('main.lua', serialize(nb.doc));
   for (const a of readAssets()) zip.file(a.name, dataURLtoBytes(a.dataURL));
+  for (const l of readLibs()) zip.file(l.path, l.code);
   return zip.generateAsync({ type:'blob', compression:'DEFLATE' });
 }
 function isolated(){ return (typeof SharedArrayBuffer!=='undefined') && (window.crossOriginIsolated!==false); }
@@ -1236,6 +1536,7 @@ function wire(){
   $('#add-asset').onclick=()=>$('#asset-input').click();
   $('#asset-input').onchange=e=>{ addAssets(e.target.files); e.target.value=''; };
   $('#snap-now').onclick=()=>{ saveDoc(true); toast('Snapshot saved'); };
+  $('#api-search').oninput=e=>renderApi(e.target.value);
   $('#toggle-console').onclick=()=>showConsole();
   $('#st-theme').onclick=()=>switchTab('settings');
   $$('#left-activity-bar .activity-bar-btn').forEach(b=>b.onclick=()=>switchTab(b.dataset.tab));
@@ -1269,6 +1570,10 @@ function boot(){
   renderNotebook();
   renderAssets();
   renderHistory();
+  renderOutline();
+  renderLibs();
+  renderApi('');
+  initAssistant();
   setDirty(false);
   setRuntime('idle');
   loadMarked();
