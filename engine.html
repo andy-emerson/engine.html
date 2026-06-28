@@ -1,0 +1,976 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>engine.html — LÖVE notebook IDE</title>
+<!--
+  engine.html — a single-file, in-browser IDE for authoring LÖVE (Love2D) games.
+
+  The product is the game: main.lua (+ assets) is the single source of truth, and
+  it stays a real, runnable .lua at all times. The notebook is a pure projection
+  over that file. See the founding design doc for the full rationale.
+
+  Modules below mirror §6 of the design doc:
+    doc model   — parse(lua)->cells[] / serialize(cells)->lua  (idempotent)
+    markdown    — tiny built-in renderer (no network dependency)
+    persistence — localStorage autosave + snapshot history
+    runtime     — love.js (2dengine) loader, .love build, preview lifecycle
+    cell UI     — list, add/delete/reorder, md<->lua toggle, Lua editor
+    assets      — left activity-bar asset manager
+    export      — runnable .love
+    tests       — in-page round-trip / toggle self-tests
+-->
+<style>
+  :root {
+    --bg: #1e1e1e;
+    --bg-2: #252526;
+    --bg-3: #2d2d30;
+    --bg-activity: #333333;
+    --border: #3c3c3c;
+    --fg: #d4d4d4;
+    --fg-dim: #858585;
+    --accent: #1ee79b;
+    --accent-2: #0e639c;
+    --accent-2-hover: #1177bb;
+    --danger: #f14c4c;
+    --code-font: "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+    --ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font-family: var(--ui-font); font-size: 13px;
+    display: grid;
+    grid-template-rows: 36px 1fr 22px;
+    grid-template-columns: 48px 240px 1fr 6px minmax(280px, 44%);
+    grid-template-areas:
+      "titlebar titlebar titlebar titlebar titlebar"
+      "activity sidebar  main     gutter   preview"
+      "status   status   status   status   status";
+    overflow: hidden;
+  }
+
+  /* ---- title bar ---- */
+  #titlebar {
+    grid-area: titlebar; background: var(--bg-3);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px; padding: 0 10px;
+    -webkit-user-select: none; user-select: none;
+  }
+  #titlebar .logo { font-weight: 700; letter-spacing: .2px; }
+  #titlebar .logo b { color: var(--accent); }
+  #titlebar .spacer { flex: 1; }
+  #titlebar .filename { color: var(--fg-dim); font-family: var(--code-font); font-size: 12px; }
+  .btn {
+    background: var(--bg-2); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 5px; padding: 4px 10px; cursor: pointer; font-size: 12px;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .btn:hover { background: var(--bg-activity); }
+  .btn.primary { background: var(--accent-2); border-color: var(--accent-2); color: #fff; }
+  .btn.primary:hover { background: var(--accent-2-hover); }
+  .btn.run { background: var(--accent); border-color: var(--accent); color: #00231a; font-weight: 600; }
+  .btn.run:hover { filter: brightness(1.08); }
+
+  /* ---- activity bar ---- */
+  #activity {
+    grid-area: activity; background: var(--bg-activity);
+    display: flex; flex-direction: column; align-items: center; padding-top: 8px; gap: 4px;
+  }
+  #activity .act {
+    width: 40px; height: 40px; display: grid; place-items: center;
+    color: var(--fg-dim); cursor: pointer; border-left: 2px solid transparent; font-size: 18px;
+  }
+  #activity .act:hover { color: var(--fg); }
+  #activity .act.active { color: var(--fg); border-left-color: var(--accent); }
+
+  /* ---- sidebar ---- */
+  #sidebar {
+    grid-area: sidebar; background: var(--bg-2);
+    border-right: 1px solid var(--border); overflow-y: auto; display: flex; flex-direction: column;
+  }
+  .side-head {
+    text-transform: uppercase; font-size: 11px; letter-spacing: .6px; color: var(--fg-dim);
+    padding: 10px 12px 6px; display: flex; align-items: center; justify-content: space-between;
+  }
+  .side-head .mini { cursor: pointer; color: var(--fg-dim); font-size: 14px; }
+  .side-head .mini:hover { color: var(--fg); }
+  .pane { display: none; flex: 1 1 auto; }
+  .pane.active { display: block; }
+  .asset-item, .hist-item {
+    padding: 5px 12px; display: flex; align-items: center; gap: 8px; cursor: default;
+    font-family: var(--code-font); font-size: 12px;
+  }
+  .asset-item:hover, .hist-item:hover { background: var(--bg-3); }
+  .asset-item .grow, .hist-item .grow { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .asset-item .del { color: var(--fg-dim); cursor: pointer; }
+  .asset-item .del:hover { color: var(--danger); }
+  .hist-item { cursor: pointer; }
+  .hist-item .when { color: var(--fg-dim); font-size: 11px; }
+  .side-empty { color: var(--fg-dim); padding: 8px 12px; font-style: italic; }
+
+  /* ---- main / notebook ---- */
+  #main { grid-area: main; overflow-y: auto; padding: 18px 0 120px; }
+  #cells { max-width: 860px; margin: 0 auto; padding: 0 18px; }
+  .cell {
+    border: 1px solid var(--border); border-radius: 8px; margin: 10px 0;
+    background: var(--bg-2); overflow: hidden;
+  }
+  .cell.focused { border-color: #5a5a5a; }
+  .cell-bar {
+    display: flex; align-items: center; gap: 6px; padding: 4px 8px;
+    background: var(--bg-3); border-bottom: 1px solid var(--border); font-size: 11px;
+  }
+  .cell-bar .badge {
+    font-family: var(--code-font); text-transform: uppercase; letter-spacing: .5px;
+    padding: 1px 6px; border-radius: 4px; font-size: 10px;
+  }
+  .badge.code { background: #213a4d; color: #6fb3e0; }
+  .badge.markdown { background: #3a2f4d; color: #c39be0; }
+  .cell-bar .spacer { flex: 1; }
+  .cell-bar .ico {
+    width: 22px; height: 20px; display: grid; place-items: center; border-radius: 4px;
+    cursor: pointer; color: var(--fg-dim); font-size: 13px; -webkit-user-select: none; user-select: none;
+  }
+  .cell-bar .ico:hover { background: var(--bg-activity); color: var(--fg); }
+  .cell-bar .ico.danger:hover { color: var(--danger); }
+  .cell-body { position: relative; }
+  textarea.editor {
+    width: 100%; border: none; outline: none; resize: none; display: block;
+    background: transparent; color: var(--fg); font-family: var(--code-font);
+    font-size: 13px; line-height: 1.5; padding: 10px 12px; tab-size: 2;
+    white-space: pre; overflow-x: auto;
+  }
+  .md-render {
+    padding: 4px 16px; line-height: 1.6; cursor: text;
+  }
+  .md-render h1 { font-size: 1.7em; border-bottom: 1px solid var(--border); padding-bottom: .2em; }
+  .md-render h2 { font-size: 1.4em; border-bottom: 1px solid var(--border); padding-bottom: .2em; }
+  .md-render h3 { font-size: 1.2em; }
+  .md-render code {
+    font-family: var(--code-font); background: var(--bg-3); padding: 1px 5px; border-radius: 4px; font-size: .92em;
+  }
+  .md-render pre { background: var(--bg-3); padding: 10px 12px; border-radius: 6px; overflow-x: auto; }
+  .md-render pre code { background: none; padding: 0; }
+  .md-render blockquote {
+    margin: .6em 0; padding: 2px 12px; border-left: 3px solid var(--border); color: var(--fg-dim);
+  }
+  .md-render a { color: var(--accent); }
+  .md-render hr { border: none; border-top: 1px solid var(--border); }
+  .md-render :first-child { margin-top: 0; }
+  .md-render :last-child { margin-bottom: 0; }
+  .md-empty { color: var(--fg-dim); font-style: italic; }
+  .add-row { max-width: 860px; margin: 6px auto; padding: 0 18px; display: flex; gap: 8px; justify-content: center; }
+  .add-row .btn { font-size: 11px; }
+
+  /* ---- gutter (resize handle, decorative) ---- */
+  #gutter { grid-area: gutter; background: var(--border); cursor: col-resize; }
+
+  /* ---- preview ---- */
+  #preview { grid-area: preview; background: #141414; border-left: 1px solid var(--border); display: flex; flex-direction: column; }
+  .prev-head {
+    display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+    border-bottom: 1px solid var(--border); background: var(--bg-3);
+  }
+  .prev-head .title { font-size: 11px; text-transform: uppercase; letter-spacing: .6px; color: var(--fg-dim); }
+  .prev-head .spacer { flex: 1; }
+  #stage {
+    flex: 1; min-height: 0; display: grid; place-items: center; position: relative; overflow: hidden; background: #0c0c0c;
+  }
+  #stage iframe { border: 0; width: 100%; height: 100%; background: #000; }
+  #stage .placeholder {
+    color: var(--fg-dim); text-align: center; padding: 24px; max-width: 360px; line-height: 1.6;
+  }
+  #stage .placeholder .big { font-size: 40px; margin-bottom: 8px; }
+  #stage .placeholder code { font-family: var(--code-font); color: var(--accent); }
+  #log {
+    height: 130px; overflow-y: auto; border-top: 1px solid var(--border);
+    background: #0c0c0c; font-family: var(--code-font); font-size: 11.5px; padding: 6px 10px; white-space: pre-wrap;
+  }
+  #log .err { color: var(--danger); }
+  #log .ok { color: var(--accent); }
+  #log .dim { color: var(--fg-dim); }
+
+  /* ---- status bar ---- */
+  #status {
+    grid-area: status; background: var(--accent-2); color: #fff;
+    display: flex; align-items: center; gap: 14px; padding: 0 12px; font-size: 11.5px;
+  }
+  #status .spacer { flex: 1; }
+  #status .dot { width: 7px; height: 7px; border-radius: 50%; background: #fff; display: inline-block; margin-right: 5px; }
+  #status.dirty { background: #b8851f; }
+
+  /* hidden file input */
+  #fileInput, #assetInput { display: none; }
+
+  /* toast */
+  #toast {
+    position: fixed; bottom: 34px; left: 50%; transform: translateX(-50%);
+    background: var(--bg-3); border: 1px solid var(--border); color: var(--fg);
+    padding: 8px 14px; border-radius: 6px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 50;
+  }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+  <div id="titlebar">
+    <span class="logo">engine<b>.html</b></span>
+    <span class="filename" id="filename">main.lua</span>
+    <span class="spacer"></span>
+    <button class="btn" id="btnTests" title="Run self-tests">✓ Tests</button>
+    <button class="btn" id="btnOpen" title="Open a main.lua">Open</button>
+    <button class="btn" id="btnSave" title="Download main.lua">Save</button>
+    <button class="btn primary" id="btnExport" title="Export a runnable .love">⤓ .love</button>
+    <button class="btn run" id="btnRun" title="Run preview (Ctrl/Cmd+Enter)">▶ Run</button>
+  </div>
+
+  <div id="activity">
+    <div class="act active" data-pane="assets" title="Assets">🗂</div>
+    <div class="act" data-pane="history" title="History">🕘</div>
+  </div>
+
+  <div id="sidebar">
+    <div class="pane active" id="pane-assets" data-pane="assets">
+      <div class="side-head">Assets <span class="mini" id="addAsset" title="Add asset">＋</span></div>
+      <div id="assetList"></div>
+    </div>
+    <div class="pane" id="pane-history" data-pane="history">
+      <div class="side-head">History <span class="mini" id="snapNow" title="Snapshot now">＋</span></div>
+      <div id="histList"></div>
+    </div>
+  </div>
+
+  <div id="main">
+    <div id="cells"></div>
+    <div class="add-row">
+      <button class="btn" id="addCode">＋ Code cell</button>
+      <button class="btn" id="addMd">＋ Markdown cell</button>
+    </div>
+  </div>
+
+  <div id="gutter"></div>
+
+  <div id="preview">
+    <div class="prev-head">
+      <span class="title">Preview · love.js</span>
+      <span class="spacer"></span>
+      <button class="btn" id="btnStop" title="Stop / clear preview">■ Stop</button>
+    </div>
+    <div id="stage">
+      <div class="placeholder" id="placeholder">
+        <div class="big">▶</div>
+        Press <b>Run</b> to build a <code>.love</code> in your browser and boot it with love.js.
+        <br><br><span class="dim">The exported <code>.love</code> also runs in desktop LÖVE.</span>
+      </div>
+    </div>
+    <div id="log"></div>
+  </div>
+
+  <div id="status">
+    <span><span class="dot"></span><span id="statusText">Ready</span></span>
+    <span class="spacer"></span>
+    <span id="cellCount"></span>
+  </div>
+
+  <input type="file" id="fileInput" accept=".lua,text/plain">
+  <input type="file" id="assetInput" multiple>
+  <div id="toast"></div>
+
+<script>
+"use strict";
+/* ============================================================================
+ * 0. small utilities
+ * ==========================================================================*/
+const $ = sel => document.querySelector(sel);
+const el = (tag, props={}, kids=[]) => {
+  const n = document.createElement(tag);
+  for (const k in props) {
+    if (k === 'class') n.className = props[k];
+    else if (k === 'html') n.innerHTML = props[k];
+    else if (k === 'text') n.textContent = props[k];
+    else if (k.startsWith('on') && typeof props[k] === 'function') n.addEventListener(k.slice(2), props[k]);
+    else if (props[k] != null) n.setAttribute(k, props[k]);
+  }
+  (Array.isArray(kids) ? kids : [kids]).forEach(c => c != null && n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c));
+  return n;
+};
+let _uid = 0;
+const uid = () => 'c' + (++_uid);
+function toast(msg) {
+  const t = $('#toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), 1600);
+}
+
+/* ============================================================================
+ * 1. DOC MODEL — main.lua is the single source of truth.
+ *
+ *    parse(lua)  -> { cells:[...], trailing:string }
+ *    serialize(doc) -> lua
+ *
+ * Rules:
+ *   - top-level (column-0) standalone  --[[ ... ]]  (and long-bracket
+ *     --[==[ ... ]==] forms) become Markdown cells. Delimiters are hidden;
+ *     inner text is the markdown source.
+ *   - a column-0 line matching  -- %%  is an invisible code-cell separator.
+ *   - everything else is Lua, grouped into code cells split at separators.
+ *   - non-standalone / indented block comments stay as Lua inside a code cell.
+ *
+ * Idempotency: serialize(parse(file)) === file. Each cell records the exact
+ * verbatim glue (`before`) that precedes it, so whitespace and separators are
+ * preserved byte-for-byte. Structural edits re-derive canonical glue.
+ * ==========================================================================*/
+const SEP_RE = /^--\s?%%[ \t]*$/;          // a code separator line
+const OPEN_RE = /^--\[(=*)\[/;             // long-bracket comment opener at col 0
+
+function lineSpans(src) {
+  // Returns [{s,e}] character spans (excluding the '\n'); src === spans joined by '\n'.
+  const out = []; let i = 0;
+  while (true) {
+    const nl = src.indexOf('\n', i);
+    if (nl < 0) { out.push({ s: i, e: src.length }); break; }
+    out.push({ s: i, e: nl }); i = nl + 1;
+    if (i > src.length) break;
+    if (i === src.length) { out.push({ s: i, e: i }); break; } // trailing newline -> empty final line
+  }
+  return out;
+}
+
+function closeTok(level) { return ']' + '='.repeat(level) + ']'; }
+function openTok(level)  { return '--[' + '='.repeat(level) + '['; }
+
+// Detect a standalone markdown block beginning at line `li`. Returns the block
+// {level, innerStart, innerEnd, end} or null. "Standalone" = opener at col 0 and
+// the close token is the last thing on its line (only the comment occupies the lines).
+function matchMarkdown(src, lines, li) {
+  const ln = lines[li];
+  const text = src.slice(ln.s, ln.e);
+  const m = OPEN_RE.exec(text);
+  if (!m) return null;
+  const level = m[1].length;
+  const ot = openTok(level);
+  const innerStart = ln.s + ot.length;
+  const ct = closeTok(level);
+  const idx = src.indexOf(ct, innerStart);
+  if (idx < 0) return null;                       // unterminated -> treat as code
+  const end = idx + ct.length;
+  if (end !== src.length && src[end] !== '\n') return null; // trailing junk -> not standalone
+  return { level, innerStart, innerEnd: idx, end };
+}
+
+function parse(src) {
+  src = String(src == null ? '' : src);
+  const lines = lineSpans(src);
+  const segs = [];               // {type:'md'|'code'|'sep', start, end, ...}
+  let i = 0;
+  while (i < lines.length) {
+    const ln = lines[i];
+    const md = matchMarkdown(src, lines, i);
+    if (md) {
+      segs.push({ type: 'md', start: ln.s, end: md.end, level: md.level,
+                  inner: src.slice(md.innerStart, md.innerEnd) });
+      // advance past the line containing the close
+      let k = i; while (k < lines.length && lines[k].e < md.end) k++;
+      i = k + 1; continue;
+    }
+    const t = src.slice(ln.s, ln.e);
+    if (SEP_RE.test(t)) { segs.push({ type: 'sep', start: ln.s, end: ln.e }); i++; continue; }
+    // code run: until next standalone md / separator / EOF
+    let k = i;
+    while (k < lines.length) {
+      const lt = src.slice(lines[k].s, lines[k].e);
+      if (SEP_RE.test(lt)) break;
+      if (matchMarkdown(src, lines, k)) break;
+      k++;
+    }
+    const endL = k - 1;
+    segs.push({ type: 'code', start: lines[i].s, end: lines[endL].e });
+    i = k;
+  }
+
+  // assemble cells + verbatim glue
+  const cells = []; let glue = ''; let cursor = 0;
+  for (const seg of segs) {
+    glue += src.slice(cursor, seg.start);
+    if (seg.type === 'sep') {
+      glue += src.slice(seg.start, seg.end);     // separators live in glue
+    } else if (seg.type === 'md') {
+      cells.push({ id: uid(), type: 'markdown', level: seg.level, text: seg.inner, before: glue });
+      glue = '';
+    } else {
+      cells.push({ id: uid(), type: 'code', code: src.slice(seg.start, seg.end), before: glue });
+      glue = '';
+    }
+    cursor = seg.end;
+  }
+  glue += src.slice(cursor);
+  return { cells, trailing: glue };
+}
+
+function cellBody(c) {
+  if (c.type === 'code') return c.code;
+  // pick a long-bracket level that doesn't collide with the inner text
+  let lvl = c.level | 0;
+  while (c.text.indexOf(closeTok(lvl)) >= 0) lvl++;
+  return openTok(lvl) + c.text + closeTok(lvl);
+}
+
+function serialize(doc) {
+  let out = '';
+  for (const c of doc.cells) out += c.before + cellBody(c);
+  return out + (doc.trailing || '');
+}
+
+// Re-derive canonical glue after a structural change (add/delete/move/toggle).
+// Pure text edits do NOT call this, so loaded whitespace round-trips exactly.
+function normalizeGlue(doc) {
+  doc.cells.forEach((c, k) => {
+    if (k === 0) { c.before = ''; return; }
+    const prev = doc.cells[k - 1];
+    c.before = (prev.type === 'code' && c.type === 'code') ? '\n-- %%\n' : '\n';
+  });
+  if (doc.cells.length === 0) doc.trailing = '';
+  else if (!/\n$/.test(doc.trailing || '')) doc.trailing = '\n';
+}
+
+/* ============================================================================
+ * 2. MARKDOWN — compact built-in renderer (no network dependency).
+ * ==========================================================================*/
+function escapeHtml(s) {
+  return s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+function mdInline(s) {
+  s = escapeHtml(s);
+  s = s.replace(/`([^`]+)`/g, (m, c) => '<code>' + c + '</code>');
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  return s;
+}
+function renderMarkdown(src) {
+  const lines = String(src).replace(/\r\n?/g, '\n').split('\n');
+  let html = '', i = 0;
+  const isBreak = l => /^\s*$/.test(l) || /^(#{1,6})\s+/.test(l) || /^\s*```/.test(l)
+    || /^\s*[-*+]\s+/.test(l) || /^\s*\d+\.\s+/.test(l) || /^\s*>/.test(l)
+    || /^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(l);
+  while (i < lines.length) {
+    const line = lines[i];
+    if (/^\s*```/.test(line)) {
+      i++; const buf = [];
+      while (i < lines.length && !/^\s*```/.test(lines[i])) { buf.push(lines[i]); i++; }
+      i++; html += '<pre><code>' + escapeHtml(buf.join('\n')) + '</code></pre>'; continue;
+    }
+    let h = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (h) { const l = h[1].length; html += `<h${l}>${mdInline(h[2])}</h${l}>`; i++; continue; }
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { html += '<hr>'; i++; continue; }
+    if (/^\s*>/.test(line)) {
+      const buf = []; while (i < lines.length && /^\s*>/.test(lines[i])) { buf.push(lines[i].replace(/^\s*>\s?/, '')); i++; }
+      html += '<blockquote>' + renderMarkdown(buf.join('\n')) + '</blockquote>'; continue;
+    }
+    if (/^\s*[-*+]\s+/.test(line)) {
+      const buf = []; while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) { buf.push('<li>' + mdInline(lines[i].replace(/^\s*[-*+]\s+/, '')) + '</li>'); i++; }
+      html += '<ul>' + buf.join('') + '</ul>'; continue;
+    }
+    if (/^\s*\d+\.\s+/.test(line)) {
+      const buf = []; while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) { buf.push('<li>' + mdInline(lines[i].replace(/^\s*\d+\.\s+/, '')) + '</li>'); i++; }
+      html += '<ol>' + buf.join('') + '</ol>'; continue;
+    }
+    if (/^\s*$/.test(line)) { i++; continue; }
+    const buf = []; while (i < lines.length && !isBreak(lines[i])) { buf.push(lines[i]); i++; }
+    // soft-wrap newlines render as spaces (CommonMark); a line ending in two
+    // spaces forces a hard <br>.
+    const para = buf.map((l, k) => (k < buf.length - 1 && /  $/.test(l)) ? l.replace(/\s+$/, '') + '\n' : l.replace(/\s+$/, '') + (k < buf.length - 1 ? ' ' : ''));
+    html += '<p>' + mdInline(para.join('')).replace(/\n/g, '<br>') + '</p>';
+  }
+  return html;
+}
+
+/* ============================================================================
+ * 3. STATE + PERSISTENCE
+ * ==========================================================================*/
+const LS_KEY = 'engine.html:main.lua';
+const LS_HIST = 'engine.html:history';
+const LS_ASSETS = 'engine.html:assets';
+
+const SEED = `--[[
+# engine.html
+
+Welcome. This prose is a **Markdown cell** — in the file it's just a top-level
+block comment, so main.lua stays a real, runnable LÖVE game the whole time.
+
+- Edit cells on the left, watch the game render on the right.
+- Toggle any cell between **Lua** and **Markdown** — it's only comment / uncomment.
+- Export a \`.love\` that also runs in desktop LÖVE.
+]]
+function love.load()
+  ball = { x = 200, y = 150, dx = 150, dy = 110, r = 9 }
+  t = 0
+end
+-- %%
+function love.update(dt)
+  t = t + dt
+  ball.x = ball.x + ball.dx * dt
+  ball.y = ball.y + ball.dy * dt
+  if ball.x < ball.r or ball.x > 400 - ball.r then ball.dx = -ball.dx end
+  if ball.y < ball.r or ball.y > 300 - ball.r then ball.dy = -ball.dy end
+end
+-- %%
+function love.draw()
+  love.graphics.clear(0.07, 0.07, 0.07)
+  love.graphics.setColor(0.12, 0.91, 0.61)
+  love.graphics.circle('fill', ball.x, ball.y, ball.r)
+  love.graphics.setColor(1, 1, 1)
+  love.graphics.print('engine.html  ' .. string.format('%.1f', t) .. 's', 10, 10)
+end
+`;
+
+let doc;        // { cells, trailing }
+let dirty = false;
+let focusedId = null;
+
+function lsGet(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : v; } catch (e) { return d; } }
+function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+
+function loadDoc() {
+  const src = lsGet(LS_KEY, SEED);
+  doc = parse(src);
+}
+function saveDoc(snapshot) {
+  const src = serialize(doc);
+  lsSet(LS_KEY, src);
+  if (snapshot) pushHistory(src);
+  setDirty(false);
+}
+function setDirty(v) {
+  dirty = v;
+  $('#status').classList.toggle('dirty', v);
+  $('#statusText').textContent = v ? 'Unsaved changes' : 'Saved';
+}
+
+// ---- history snapshots ----
+function readHistory() { try { return JSON.parse(lsGet(LS_HIST, '[]')); } catch (e) { return []; } }
+function pushHistory(src) {
+  const hist = readHistory();
+  if (hist.length && hist[0].src === src) return;
+  hist.unshift({ t: Date.now(), src });
+  while (hist.length > 30) hist.pop();
+  lsSet(LS_HIST, JSON.stringify(hist));
+  renderHistory();
+}
+function renderHistory() {
+  const wrap = $('#histList'); wrap.innerHTML = '';
+  const hist = readHistory();
+  if (!hist.length) { wrap.appendChild(el('div', { class: 'side-empty', text: 'No snapshots yet' })); return; }
+  hist.forEach((h, idx) => {
+    const when = new Date(h.t).toLocaleString();
+    wrap.appendChild(el('div', { class: 'hist-item', title: 'Restore this snapshot',
+      onclick: () => { if (confirm('Restore snapshot from ' + when + '? Current state is snapshotted first.')) { saveDoc(true); doc = parse(h.src); setDirty(true); renderCells(); } } },
+      [ el('span', { class: 'grow', text: (idx === 0 ? '● ' : '') + relTime(h.t) }), el('span', { class: 'when', text: when.split(',')[1] || '' }) ]));
+  });
+}
+function relTime(t) {
+  const s = Math.round((Date.now() - t) / 1000);
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.round(s / 60) + 'm ago';
+  if (s < 86400) return Math.round(s / 3600) + 'h ago';
+  return Math.round(s / 86400) + 'd ago';
+}
+
+// ---- assets ----
+function readAssets() { try { return JSON.parse(lsGet(LS_ASSETS, '[]')); } catch (e) { return []; } }
+function writeAssets(a) { lsSet(LS_ASSETS, JSON.stringify(a)); renderAssets(); }
+function renderAssets() {
+  const wrap = $('#assetList'); wrap.innerHTML = '';
+  const assets = readAssets();
+  if (!assets.length) { wrap.appendChild(el('div', { class: 'side-empty', text: 'No assets. ＋ to add.' })); return; }
+  assets.forEach(a => {
+    wrap.appendChild(el('div', { class: 'asset-item', title: a.name },
+      [ el('span', { class: 'grow', text: a.name }),
+        el('span', { class: 'del', text: '✕', title: 'Remove',
+          onclick: () => { writeAssets(readAssets().filter(x => x.name !== a.name)); } }) ]));
+  });
+}
+function addAssets(fileList) {
+  const assets = readAssets();
+  let pending = fileList.length;
+  if (!pending) return;
+  Array.from(fileList).forEach(file => {
+    const r = new FileReader();
+    r.onload = () => {
+      const idx = assets.findIndex(a => a.name === file.name);
+      const rec = { name: file.name, dataURL: r.result };
+      if (idx >= 0) assets[idx] = rec; else assets.push(rec);
+      if (--pending === 0) { writeAssets(assets); toast(fileList.length + ' asset(s) added'); }
+    };
+    r.readAsDataURL(file);
+  });
+}
+function dataURLtoBytes(dataURL) {
+  const comma = dataURL.indexOf(',');
+  const b64 = dataURL.slice(comma + 1);
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+/* ============================================================================
+ * 4. RUNTIME — build a .love in-browser and boot it with love.js (2dengine).
+ *
+ * The preview is an isolated <iframe>: "recreate the Module per run" is just a
+ * fresh document, which sidesteps love.js's historically buggy in-place restart.
+ * love.js needs SharedArrayBuffer, which requires the page to be served
+ * cross-origin-isolated (COOP: same-origin + COEP: require-corp) over http(s) —
+ * not file://. We detect that and report it honestly rather than failing silent.
+ * ==========================================================================*/
+const RUNTIME = {
+  JSZIP_URL: 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js',
+  PLAYER_URL: 'https://cdn.jsdelivr.net/gh/2dengine/love.js@master/player.js',
+  LOVE_VERSION: '11.5',
+};
+let _jszip = null;
+function loadJSZip() {
+  if (window.JSZip) return Promise.resolve(window.JSZip);
+  if (_jszip) return _jszip;
+  _jszip = new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = RUNTIME.JSZIP_URL;
+    s.onload = () => res(window.JSZip);
+    s.onerror = () => rej(new Error('Could not load JSZip from CDN (offline?).'));
+    document.head.appendChild(s);
+  });
+  return _jszip;
+}
+
+function logLine(msg, cls) {
+  const log = $('#log');
+  log.appendChild(el('div', { class: cls || '', text: msg }));
+  log.scrollTop = log.scrollHeight;
+}
+function clearLog() { $('#log').innerHTML = ''; }
+
+async function buildLoveBlob() {
+  const JSZip = await loadJSZip();
+  const zip = new JSZip();
+  zip.file('main.lua', serialize(doc));
+  for (const a of readAssets()) zip.file(a.name, dataURLtoBytes(a.dataURL));
+  return zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+}
+
+function isolationReady() {
+  return (typeof SharedArrayBuffer !== 'undefined') && (window.crossOriginIsolated !== false);
+}
+
+// Build the player iframe document. It loads the 2dengine player.js and points
+// it at our in-memory .love via a blob: URL (`?g=`). Same-origin blob document so
+// it can read the .love blob URL the parent created.
+function playerHTML(loveBlobUrl) {
+  const opener = '<scr' + 'ipt';
+  const closer = '</scr' + 'ipt>';
+  return `<!doctype html><html><head><meta charset="utf-8"><style>
+    html,body{margin:0;height:100%;background:#000;overflow:hidden}
+    canvas{display:block;margin:auto}
+    #loadingCanvas{display:block;margin:auto}
+  </style></head><body>
+  <canvas id="canvas" width="800" height="600" oncontextmenu="event.preventDefault()"></canvas>
+  ${opener} src="${RUNTIME.PLAYER_URL}?g=${encodeURIComponent(loveBlobUrl)}&v=${RUNTIME.LOVE_VERSION}"${closer}
+  </body></html>`;
+}
+
+let _loveUrl = null, _docUrl = null;
+function revokeUrls() {
+  if (_loveUrl) { URL.revokeObjectURL(_loveUrl); _loveUrl = null; }
+  if (_docUrl) { URL.revokeObjectURL(_docUrl); _docUrl = null; }
+}
+
+async function run() {
+  saveDoc(true);
+  clearLog();
+  const stage = $('#stage');
+  if (!isolationReady()) {
+    showPlaceholder(true);
+    logLine('Preview needs cross-origin isolation (SharedArrayBuffer).', 'err');
+    logLine('Serve engine.html over http(s) with these response headers:', 'dim');
+    logLine('  Cross-Origin-Opener-Policy: same-origin', 'dim');
+    logLine('  Cross-Origin-Embedder-Policy: require-corp', 'dim');
+    logLine('Then love.js can boot. Export still works and runs in desktop LÖVE.', 'dim');
+    return;
+  }
+  logLine('Building .love …', 'dim');
+  let blob;
+  try { blob = await buildLoveBlob(); }
+  catch (e) { logLine(String(e.message || e), 'err'); return; }
+  logLine('Booting love.js ' + RUNTIME.LOVE_VERSION + ' …', 'dim');
+
+  revokeUrls();
+  _loveUrl = URL.createObjectURL(blob);
+  const html = playerHTML(_loveUrl);
+  _docUrl = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+
+  // fresh iframe each run == full Module recreate
+  const old = stage.querySelector('iframe');
+  if (old) old.remove();
+  hidePlaceholder();
+  const frame = el('iframe', { src: _docUrl, allow: 'autoplay; fullscreen' });
+  frame.onload = () => logLine('Running. Click the canvas for keyboard/mouse focus.', 'ok');
+  stage.appendChild(frame);
+}
+
+function stopPreview() {
+  const frame = $('#stage').querySelector('iframe');
+  if (frame) frame.remove();
+  revokeUrls();
+  showPlaceholder(false);
+  logLine('Stopped.', 'dim');
+}
+function showPlaceholder(keepLog) {
+  hidePlaceholder();
+  $('#stage').appendChild($('#placeholder') || el('div'));
+  $('#placeholder').style.display = '';
+}
+function hidePlaceholder() { const p = $('#placeholder'); if (p) p.style.display = 'none'; }
+
+/* ============================================================================
+ * 5. EXPORT — runnable .love
+ * ==========================================================================*/
+async function exportLove() {
+  try {
+    const blob = await buildLoveBlob();
+    downloadBlob(blob, 'game.love');
+    toast('Exported game.love');
+  } catch (e) { alert('Export failed: ' + (e.message || e)); }
+}
+function downloadBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = el('a', { href: url, download: name });
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function downloadText(text, name, type) {
+  downloadBlob(new Blob([text], { type: type || 'text/plain' }), name);
+}
+
+/* ============================================================================
+ * 6. CELL UI
+ * ==========================================================================*/
+function autosize(ta) { ta.style.height = 'auto'; ta.style.height = (ta.scrollHeight + 2) + 'px'; }
+
+function renderCells() {
+  const wrap = $('#cells'); wrap.innerHTML = '';
+  doc.cells.forEach((c, idx) => wrap.appendChild(renderCell(c, idx)));
+  $('#cellCount').textContent = doc.cells.length + ' cell' + (doc.cells.length === 1 ? '' : 's');
+  saveSoon();
+}
+
+function renderCell(c, idx) {
+  const bar = el('div', { class: 'cell-bar' }, [
+    el('span', { class: 'badge ' + c.type, text: c.type === 'code' ? 'lua' : 'md' }),
+    el('span', { class: 'spacer' }),
+    el('span', { class: 'ico', title: c.type === 'code' ? 'Convert to Markdown' : 'Convert to Lua',
+      text: c.type === 'code' ? '✎' : '{ }', onclick: () => toggleCell(idx) }),
+    el('span', { class: 'ico', title: 'Move up', text: '↑', onclick: () => moveCell(idx, -1) }),
+    el('span', { class: 'ico', title: 'Move down', text: '↓', onclick: () => moveCell(idx, 1) }),
+    el('span', { class: 'ico danger', title: 'Delete cell', text: '🗑', onclick: () => deleteCell(idx) }),
+  ]);
+
+  const body = el('div', { class: 'cell-body' });
+  if (c.type === 'code') {
+    const ta = el('textarea', { class: 'editor', spellcheck: 'false', value: c.code });
+    ta.value = c.code;
+    ta.addEventListener('input', () => { c.code = ta.value; autosize(ta); setDirty(true); saveSoon(); });
+    ta.addEventListener('focus', () => { focusedId = c.id; });
+    ta.addEventListener('keydown', e => handleEditorKeys(e, ta, c, 'code'));
+    body.appendChild(ta);
+    setTimeout(() => autosize(ta), 0);
+  } else {
+    const render = el('div', { class: 'md-render' });
+    render.innerHTML = c.text.trim() ? renderMarkdown(c.text) : '<span class="md-empty">Empty markdown cell — click to edit</span>';
+    const ta = el('textarea', { class: 'editor', spellcheck: 'false' });
+    ta.style.display = 'none'; ta.value = c.text;
+    render.addEventListener('click', e => {
+      if (e.target.tagName === 'A') return;
+      render.style.display = 'none'; ta.style.display = ''; autosize(ta); ta.focus();
+    });
+    ta.addEventListener('input', () => { c.text = ta.value; autosize(ta); setDirty(true); saveSoon(); });
+    ta.addEventListener('focus', () => { focusedId = c.id; });
+    ta.addEventListener('blur', () => {
+      ta.style.display = 'none'; render.style.display = '';
+      render.innerHTML = c.text.trim() ? renderMarkdown(c.text) : '<span class="md-empty">Empty markdown cell — click to edit</span>';
+    });
+    ta.addEventListener('keydown', e => handleEditorKeys(e, ta, c, 'md'));
+    body.appendChild(render); body.appendChild(ta);
+  }
+
+  return el('div', { class: 'cell' + (c.id === focusedId ? ' focused' : '') }, [bar, body]);
+}
+
+function handleEditorKeys(e, ta, c, kind) {
+  // Tab inserts two spaces (code only)
+  if (e.key === 'Tab' && kind === 'code') {
+    e.preventDefault();
+    const s = ta.selectionStart, en = ta.selectionEnd;
+    ta.value = ta.value.slice(0, s) + '  ' + ta.value.slice(en);
+    ta.selectionStart = ta.selectionEnd = s + 2;
+    c.code = ta.value; autosize(ta); setDirty(true); saveSoon();
+  }
+  // Ctrl/Cmd+Enter runs
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); run(); }
+}
+
+// ---- structural ops ----
+function newCell(type) {
+  return type === 'code'
+    ? { id: uid(), type: 'code', code: '', before: '' }
+    : { id: uid(), type: 'markdown', level: 0, text: '', before: '' };
+}
+function insertCell(type, at) {
+  const c = newCell(type);
+  if (at == null) doc.cells.push(c); else doc.cells.splice(at, 0, c);
+  normalizeGlue(doc); focusedId = c.id; setDirty(true); renderCells();
+}
+function deleteCell(idx) {
+  if (doc.cells.length === 1) { if (!confirm('Delete the only cell?')) return; }
+  doc.cells.splice(idx, 1); normalizeGlue(doc); setDirty(true); renderCells();
+}
+function moveCell(idx, dir) {
+  const j = idx + dir;
+  if (j < 0 || j >= doc.cells.length) return;
+  const [c] = doc.cells.splice(idx, 1); doc.cells.splice(j, 0, c);
+  normalizeGlue(doc); setDirty(true); renderCells();
+}
+function toggleCell(idx) {
+  const c = doc.cells[idx];
+  if (c.type === 'code') {
+    doc.cells[idx] = { id: c.id, type: 'markdown', level: 0, text: c.code, before: c.before };
+  } else {
+    doc.cells[idx] = { id: c.id, type: 'code', code: c.text, before: c.before };
+  }
+  normalizeGlue(doc); setDirty(true); renderCells();
+}
+
+// ---- debounced autosave ----
+let _saveTimer = null;
+function saveSoon() { clearTimeout(_saveTimer); _saveTimer = setTimeout(() => saveDoc(false), 600); }
+
+/* ============================================================================
+ * 7. SELF-TESTS — doc-model round-trip & toggle invariants.
+ * ==========================================================================*/
+function runSelfTests() {
+  const samples = [
+    SEED,
+    '',
+    'print("hi")',
+    'print("hi")\n',
+    '--[[ just markdown ]]\n',
+    '--[[\nmulti\nline\n]]\n-- %%\nlocal x = 1\n',
+    'local a = 1\n-- %%\nlocal b = 2\n-- %%\nlocal c = 3\n',
+    '--[==[ level two ]] still inside ]==]\nfoo()\n',
+    'function f()\n  --[[ indented block: stays Lua ]]\n  return 1\nend\n',
+    '\n\n\n--[[a]]\n\n\nbar()\n\n',
+    '-- %%\nlocal lead = 1\n',                     // leading separator -> empty first code cell
+    '--[[x]]\n--[[y]]\n',                          // adjacent markdown cells
+    'a()\n--[[ md ]]\nb()\n',                      // code, md, code
+  ];
+  const results = [];
+  let pass = 0;
+  samples.forEach((src, i) => {
+    let ok = false, note = '';
+    try {
+      const out = serialize(parse(src));
+      ok = out === src;
+      if (!ok) note = 'len ' + src.length + '->' + out.length;
+    } catch (e) { note = 'threw ' + e.message; }
+    results.push({ name: 'roundtrip #' + i, ok, note });
+    if (ok) pass++;
+  });
+  // toggle invariants: code -> md -> code preserves text
+  try {
+    const d = parse('local z = 42\n');
+    const c0 = d.cells[0];
+    const txt = c0.code;
+    doc; // noop
+    // simulate toggle twice on a scratch doc
+    const scratch = { cells: [{ id: 'x', type: 'code', code: txt, before: '' }], trailing: '\n' };
+    scratch.cells[0] = { id: 'x', type: 'markdown', level: 0, text: scratch.cells[0].code, before: '' };
+    scratch.cells[0] = { id: 'x', type: 'code', code: scratch.cells[0].text, before: '' };
+    const ok = scratch.cells[0].code === txt;
+    results.push({ name: 'toggle code<->md preserves text', ok, note: '' });
+    if (ok) pass++;
+  } catch (e) { results.push({ name: 'toggle', ok: false, note: e.message }); }
+
+  // separator synthesis: two adjacent code cells must re-parse as two cells
+  try {
+    const d = { cells: [newCell('code'), newCell('code')], trailing: '\n' };
+    d.cells[0].code = 'a()'; d.cells[1].code = 'b()';
+    normalizeGlue(d);
+    const re = parse(serialize(d));
+    const ok = re.cells.length === 2 && re.cells.every(c => c.type === 'code');
+    results.push({ name: 'adjacent code cells keep separator', ok, note: 'got ' + re.cells.length });
+    if (ok) pass++;
+  } catch (e) { results.push({ name: 'separator', ok: false, note: e.message }); }
+
+  const total = results.length;
+  clearLog();
+  logLine('Self-tests: ' + pass + '/' + total + ' passed', pass === total ? 'ok' : 'err');
+  results.forEach(r => logLine((r.ok ? '  ✓ ' : '  ✗ ') + r.name + (r.note ? '  — ' + r.note : ''), r.ok ? 'dim' : 'err'));
+  // surface preview log even if isolation blocks the canvas
+  showPlaceholder(true);
+  toast(pass === total ? 'All ' + total + ' tests passed' : (total - pass) + ' test(s) failed');
+  return pass === total;
+}
+
+/* ============================================================================
+ * 8. WIRING
+ * ==========================================================================*/
+function switchPane(name) {
+  document.querySelectorAll('#activity .act').forEach(a => a.classList.toggle('active', a.dataset.pane === name));
+  document.querySelectorAll('#sidebar .pane').forEach(p => p.classList.toggle('active', p.dataset.pane === name));
+}
+
+function wire() {
+  $('#btnRun').onclick = run;
+  $('#btnStop').onclick = stopPreview;
+  $('#btnExport').onclick = exportLove;
+  $('#btnTests').onclick = runSelfTests;
+  $('#btnSave').onclick = () => { saveDoc(true); downloadText(serialize(doc), 'main.lua', 'text/x-lua'); toast('Saved main.lua'); };
+  $('#btnOpen').onclick = () => $('#fileInput').click();
+  $('#fileInput').onchange = e => {
+    const f = e.target.files[0]; if (!f) return;
+    const r = new FileReader();
+    r.onload = () => { saveDoc(true); doc = parse(r.result); setDirty(true); renderCells(); toast('Opened ' + f.name); };
+    r.readAsText(f); e.target.value = '';
+  };
+  $('#addCode').onclick = () => insertCell('code');
+  $('#addMd').onclick = () => insertCell('markdown');
+  $('#addAsset').onclick = () => $('#assetInput').click();
+  $('#assetInput').onchange = e => { addAssets(e.target.files); e.target.value = ''; };
+  $('#snapNow').onclick = () => { saveDoc(true); toast('Snapshot saved'); };
+  document.querySelectorAll('#activity .act').forEach(a => a.onclick = () => switchPane(a.dataset.pane));
+
+  document.addEventListener('keydown', e => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); run(); }
+    if ((e.metaKey || e.ctrlKey) && (e.key === 's' || e.key === 'S')) {
+      e.preventDefault(); saveDoc(true); downloadText(serialize(doc), 'main.lua', 'text/x-lua'); toast('Saved main.lua');
+    }
+  });
+  window.addEventListener('beforeunload', () => { try { saveDoc(false); } catch (e) {} });
+}
+
+function boot() {
+  loadDoc();
+  wire();
+  renderCells();
+  renderAssets();
+  renderHistory();
+  setDirty(false);
+  if (!isolationReady()) {
+    $('#statusText').textContent = 'Ready · preview needs cross-origin isolation (see log on Run)';
+  }
+  // expose doc model for ad-hoc console testing / oracle comparisons
+  window.engine = { parse, serialize, normalizeGlue, renderMarkdown, runSelfTests, get doc() { return doc; } };
+}
+boot();
+</script>
+</body>
+</html>
