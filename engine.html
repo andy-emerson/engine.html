@@ -3,9 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>engine.html — LÖVE notebook IDE</title>
+<title>Gamengine — LÖVE notebook IDE</title>
 <!--
-  engine.html — a single-file, in-browser IDE for authoring LÖVE (Love2D) games.
+  Gamengine — a single-file, in-browser IDE for authoring LÖVE (Love2D) games.
+  (The whole app is one file, engine.html.)
 
   main.lua IS the single source of truth; the notebook is a pure projection over
   it, and the file always stays a valid, runnable .lua. Design language and many
@@ -313,7 +314,7 @@ input[type=file] { display: none; }
   <div class="topbar">
     <div class="topbar-logo">
       <span class="mark" id="logo-mark"></span>
-      <span class="word">engine<b>.html</b></span>
+      <span class="word">Gam<b>engine</b></span>
     </div>
     <div class="topbar-sep"></div>
 
@@ -643,7 +644,7 @@ function refreshMarkdownCells(){
  * ════════════════════════════════════════════════════════════════════════════ */
 const LS = { doc:'engine.html:main.lua', hist:'engine.html:history', assets:'engine.html:assets', theme:'engine.html:theme', opts:'engine.html:opts' };
 const SEED = `--[[
-# engine.html
+# Gamengine
 
 Welcome. This prose is a **Markdown cell** — in the file it's just a top-level
 block comment, so main.lua stays a real, runnable LÖVE game the whole time.
@@ -670,7 +671,7 @@ function love.draw()
   love.graphics.setColor(0.85, 0.18, 0.55)
   love.graphics.circle('fill', ball.x, ball.y, ball.r)
   love.graphics.setColor(1, 1, 1)
-  love.graphics.print('engine.html  ' .. string.format('%.1f', t) .. 's', 10, 10)
+  love.graphics.print('Gamengine  ' .. string.format('%.1f', t) .. 's', 10, 10)
 end
 `;
 
