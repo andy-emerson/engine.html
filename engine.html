@@ -187,7 +187,14 @@ body { font-family: var(--font-sans); background: var(--bg-tertiary); color: var
 
 .cell { margin: 0 16px; position: relative; border-radius: var(--radius-lg); border: .5px solid var(--border-faint); background: var(--bg-primary); overflow: hidden; transition: border-color .15s; }
 .cell.focused { border-color: var(--border-info); }
-.cell-header { display: flex; align-items: center; gap: 7px; padding: 6px 11px; background: var(--bg-secondary); border-bottom: .5px solid var(--border-faint); position: relative; }
+/* drag-to-reorder: the source cell becomes a dashed placeholder; a floating
+   clone (.cell-ghost) follows the cursor (styled inline in JS). */
+.cell.drag-placeholder { background: transparent; border: 1.5px dashed var(--border-medium); box-shadow: none; }
+.cell.drag-placeholder > * { visibility: hidden; }
+.cell-ghost { border: .5px solid var(--border-info); background: var(--bg-primary); overflow: hidden; }
+.cell-header { display: flex; align-items: center; gap: 7px; padding: 6px 11px; background: var(--bg-secondary); border-bottom: .5px solid var(--border-faint); position: relative; cursor: grab; user-select: none; }
+.cell-header:active { cursor: grabbing; }
+.cell-header .cell-badge, .cell-header .ca-btn { cursor: pointer; }
 .cell-badge { font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 99px; letter-spacing: .05em; text-transform: uppercase; display: flex; align-items: center; gap: 4px; flex-shrink: 0; cursor: pointer; border: 1px solid color-mix(in srgb, currentColor 30%, transparent); }
 .cell-badge:hover { opacity: .82; }
 .badge-lua { background: var(--type-lua-bg); color: var(--type-lua-fg); }
@@ -852,10 +859,14 @@ function updateCellTitle(cellEl, cell){
   const t=cellEl.querySelector('.cell-title');
   if (t) t.textContent = cell.type==='md' ? firstLine(cell.code).replace(/^#+\s*/,'') : firstLine(cell.code);
 }
-function createInsertZone(index){
-  const lua=elem('button',{class:'insert-btn type-lua',html:svg('code')+' Lua',onclick:()=>addCell('lua',index())});
-  const md =elem('button',{class:'insert-btn type-md',html:svg('md')+' Markdown',onclick:()=>addCell('md',index())});
-  return elem('div',{class:'cell-insert'},[lua,md]);
+// Insert zones compute their index from DOM position (count .cell nodes before
+// them), so they stay correct after in-place drag reordering.
+function createInsertZone(){
+  const zone=elem('div',{class:'cell-insert'});
+  const at=()=>{ let i=0,n=zone.previousElementSibling; while(n){ if(n.classList && n.classList.contains('cell')) i++; n=n.previousElementSibling; } return i; };
+  zone.appendChild(elem('button',{class:'insert-btn type-lua',html:svg('code')+' Lua',onclick:()=>addCell('lua',at())}));
+  zone.appendChild(elem('button',{class:'insert-btn type-md',html:svg('md')+' Markdown',onclick:()=>addCell('md',at())}));
+  return zone;
 }
 function renderMd(cellEl, cell){
   const out=cellEl.querySelector('.cell-output');
@@ -898,6 +909,7 @@ function createCellEl(cell){
     renderMd(cellEl,cell);
   }
   updateCellTitle(cellEl,cell);
+  attachDrag(header, cellEl, cell);
   return cellEl;
 }
 function mkAction(ico,title,fn,cls){ const b=elem('button',{class:'ca-btn'+(cls?' '+cls:''),title,html:svg(ico)}); b.onclick=fn; return b; }
@@ -926,14 +938,92 @@ function renderNotebook(){
   syncFromEditors();
   nb.editor.views.forEach(v=>{ try{v.destroy();}catch(e){} }); nb.editor.views.clear();
   const scroll=$('#nb-scroll'); scroll.innerHTML='';
-  const indexOfId=id=>nb.doc.cells.findIndex(c=>c.id===id);
-  scroll.appendChild(createInsertZone(()=>0));
+  scroll.appendChild(createInsertZone());
   nb.doc.cells.forEach((cell)=>{
     scroll.appendChild(createCellEl(cell));
-    scroll.appendChild(createInsertZone(()=>indexOfId(cell.id)+1));
+    scroll.appendChild(createInsertZone());
   });
   $('#st-cells').textContent = nb.doc.cells.length+' cell'+(nb.doc.cells.length===1?'':'s');
   saveSoon();
+}
+
+/* ── Drag-to-reorder (ported from the oracle) ─────────────────────────────────
+ * A floating clone (ghost) follows the cursor; the source cell becomes a dashed
+ * placeholder. Adjacent cells are swapped in place as the ghost crosses them —
+ * no full re-render, so CodeMirror editors survive the drag. On drop, glue is
+ * re-derived (so -- %% separators stay correct) and the doc is saved. */
+function domSwapCells(idA, idB){
+  const scroll=$('#nb-scroll');
+  const a=scroll.querySelector(`.cell[data-id="${idA}"]`);
+  const b=scroll.querySelector(`.cell[data-id="${idB}"]`);
+  if(!a||!b)return;
+  const afterA=a.nextSibling, afterB=b.nextSibling;
+  scroll.insertBefore(b, afterA);
+  scroll.insertBefore(a, afterB);
+}
+function dragSwap(id, dir){
+  const i=nb.doc.cells.findIndex(c=>c.id===id), j=i+dir;
+  if(j<0||j>=nb.doc.cells.length)return;
+  const otherId=nb.doc.cells[j].id;
+  [nb.doc.cells[i],nb.doc.cells[j]]=[nb.doc.cells[j],nb.doc.cells[i]];
+  domSwapCells(id, otherId);
+}
+function attachDrag(header, el, cell){
+  header.addEventListener('mousedown', e=>{
+    if (e.button!==0) return;
+    if (e.target.closest('button') || e.target.closest('.cell-badge')) return;
+    const startX=e.clientX, startY=e.clientY;
+    const rect=el.getBoundingClientRect();
+    const offsetY=e.clientY-rect.top;
+    const nbBody=$('#nb-body');
+    const EDGE=0.15, MAX_SPEED=9;
+    let started=false, ghost=null, anim=null, lastY=e.clientY;
+
+    function begin(){
+      started=true;
+      ghost=el.cloneNode(true);
+      ghost.classList.add('cell-ghost');
+      ghost.style.cssText=`position:fixed;top:${rect.top}px;left:${rect.left}px;width:${rect.width}px;margin:0;pointer-events:none;z-index:1000;opacity:.93;box-shadow:0 8px 32px rgba(0,0,0,.28);border-radius:var(--radius-lg);transition:none;`;
+      document.body.appendChild(ghost);
+      el.classList.add('drag-placeholder');
+      document.body.style.cursor='grabbing';
+      document.body.style.userSelect='none';
+      anim=requestAnimationFrame(step);
+    }
+    function reorderIfCrossed(){
+      const scroll=$('#nb-scroll');
+      const cells=Array.from(scroll.querySelectorAll('.cell'));
+      const idx=cells.indexOf(el);
+      const gr=ghost.getBoundingClientRect();
+      if (idx>0 && gr.top < cells[idx-1].getBoundingClientRect().top){ dragSwap(cell.id,-1); return; }
+      if (idx<cells.length-1 && gr.bottom > cells[idx+1].getBoundingClientRect().bottom){ dragSwap(cell.id,1); return; }
+    }
+    function step(){
+      ghost.style.top=(lastY-offsetY)+'px';
+      const r=nbBody.getBoundingClientRect();
+      const dTop=lastY-r.top, dBot=r.bottom-lastY, ez=nbBody.clientHeight*EDGE;
+      if (dTop<ez) nbBody.scrollTop -= MAX_SPEED*(1-Math.max(0,dTop)/ez);
+      else if (dBot<ez) nbBody.scrollTop += MAX_SPEED*(1-Math.max(0,dBot)/ez);
+      reorderIfCrossed();
+      anim=requestAnimationFrame(step);
+    }
+    function move(ev){
+      lastY=ev.clientY;
+      if (!started && (Math.abs(ev.clientX-startX)>4 || Math.abs(ev.clientY-startY)>4)) begin();
+    }
+    function up(){
+      document.removeEventListener('mousemove',move);
+      document.removeEventListener('mouseup',up);
+      if (!started) return;
+      cancelAnimationFrame(anim);
+      if (ghost) ghost.remove();
+      el.classList.remove('drag-placeholder');
+      document.body.style.cursor=''; document.body.style.userSelect='';
+      normalizeGlue(nb.doc); setDirty(true); saveSoon();
+    }
+    document.addEventListener('mousemove',move);
+    document.addEventListener('mouseup',up);
+  });
 }
 
 /* structural ops */
