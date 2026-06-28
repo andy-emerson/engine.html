@@ -1030,6 +1030,7 @@ function playerHTML(loveUrl){
     + 's.onload=function(){P("out","player.js loaded; love.js should follow…")};'
     + 's.onerror=function(){P("err","player.js FAILED to load (404 / blocked): "+s.src)};'
     + 'document.body.appendChild(s);'
+    + 'var n=0,iv=setInterval(function(){var cv=document.getElementById("canvas");if(cv&&cv.width>1&&cv.height>1){clearInterval(iv);P("status","running")}else if(++n>240){clearInterval(iv)}},250);'
     + '})();'+c;
   // player.js fetches its engine files (lua/normalize*.lua, 11.5/love.wasm,
   // love.worker.js) as RELATIVE URLs. The iframe doc is a blob: URL, against
@@ -1043,6 +1044,11 @@ function hookLoveMessages(){
   if (window._loveMsgHook) return; window._loveMsgHook = true;
   window.addEventListener('message', e=>{
     const d=e.data; if(!d || typeof d!=='object' || !('__love' in d)) return;
+    if (d.__love==='status' && d.msg==='running'){
+      setRuntime('running','Runtime: running');
+      logConsole('Running — click the canvas for keyboard/mouse focus.','ok');
+      return;
+    }
     logConsole('[love] '+d.msg, d.__love==='err'?'err':d.__love==='warn'?'warn':'dim');
   });
 }
@@ -1076,7 +1082,7 @@ async function run(){
   const stage=$('#stage'); const old=stage.querySelector('iframe'); if(old)old.remove();
   hidePlaceholder();
   const frame=elem('iframe',{src:_docUrl,allow:'autoplay; fullscreen; gamepad'});
-  frame.onload=()=>{ setRuntime('running','Runtime: booting'); logConsole('Player frame loaded — watching love.js output below…','dim'); };
+  frame.onload=()=>{ setRuntime('loading','Runtime: booting'); logConsole('Player frame loaded — booting love.js…','dim'); };
   stage.appendChild(frame);
 }
 function stopPreview(){ const f=$('#stage').querySelector('iframe'); if(f)f.remove(); revokeUrls(); showPlaceholder(); setRuntime('idle'); logConsole('Stopped.','dim'); }
