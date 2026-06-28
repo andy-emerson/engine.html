@@ -424,6 +424,7 @@ input[type=file] { display: none; }
     <div id="left-activity-bar" class="activity-bar">
       <button class="activity-bar-btn active" data-tab="assets" title="Assets" data-ico="assets"></button>
       <button class="activity-bar-btn" data-tab="outline" title="Outline" data-ico="list"></button>
+      <button class="activity-bar-btn" data-tab="config" title="Config · conf.lua" data-ico="sliders"></button>
       <button class="activity-bar-btn" data-tab="libs" title="Libraries" data-ico="package"></button>
       <button class="activity-bar-btn" data-tab="api" title="LÖVE API" data-ico="book"></button>
       <button class="activity-bar-btn" data-tab="assistant" title="AI assistant" data-ico="spark"></button>
@@ -463,15 +464,15 @@ input[type=file] { display: none; }
         <div class="pane-header">Settings</div>
         <div class="settings-body">
           <div>
-            <div class="settings-label">Appearance</div>
+            <div class="settings-label">Brightness</div>
             <div class="seg" id="seg-mode">
-              <button data-mode="light" data-ico="sun">Light</button>
-              <button data-mode="dark" data-ico="moon">Dark</button>
-              <button data-mode="auto" data-ico="auto">Auto</button>
+              <button data-mode="light">Light</button>
+              <button data-mode="dark">Dark</button>
+              <button data-mode="auto">Auto</button>
             </div>
           </div>
           <div>
-            <div class="settings-label">Palette</div>
+            <div class="settings-label">Tone</div>
             <div class="seg" id="seg-tone">
               <button data-tone="warm">Warm</button>
               <button data-tone="cool">Cool</button>
@@ -483,23 +484,26 @@ input[type=file] { display: none; }
             <label class="setting-toggle"><span>Line numbers</span><input type="checkbox" id="opt-linenums"></label>
           </div>
           <div>
-            <div class="settings-label">Game · conf.lua</div>
-            <div class="conf-grid">
-              <label class="conf-field"><span>Title</span><input id="conf-title" type="text" placeholder="Untitled"></label>
-              <label class="conf-field"><span>Identity (save folder)</span><input id="conf-identity" type="text" placeholder="loveide-game"></label>
-              <div class="conf-2">
-                <label class="conf-field"><span>Width</span><input id="conf-width" type="number" min="1"></label>
-                <label class="conf-field"><span>Height</span><input id="conf-height" type="number" min="1"></label>
-              </div>
-              <label class="conf-field"><span>LÖVE version</span><input id="conf-version" type="text" placeholder="11.5"></label>
-              <label class="setting-toggle"><span>Resizable window</span><input type="checkbox" id="conf-resizable"></label>
-              <label class="setting-toggle"><span>VSync</span><input type="checkbox" id="conf-vsync"></label>
-              <label class="setting-toggle"><span>Fullscreen</span><input type="checkbox" id="conf-fullscreen"></label>
-            </div>
-          </div>
-          <div>
             <div class="settings-label">Storage</div>
             <div id="storage-body"></div>
+          </div>
+        </div>
+      </div>
+      <div class="pane-panel" id="panel-config" data-tab="config">
+        <div class="pane-header">Config · conf.lua</div>
+        <div class="settings-body">
+          <div style="font-size:11px;color:var(--text-tertiary);line-height:1.5">Your game's <code>conf.lua</code> — window and project settings. Generated into the <code>.love</code> on Run and Export.</div>
+          <div class="conf-grid">
+            <label class="conf-field"><span>Window title</span><input id="conf-title" type="text" placeholder="Untitled"></label>
+            <label class="conf-field"><span>Identity (save folder)</span><input id="conf-identity" type="text" placeholder="loveide-game"></label>
+            <div class="conf-2">
+              <label class="conf-field"><span>Width</span><input id="conf-width" type="number" min="1"></label>
+              <label class="conf-field"><span>Height</span><input id="conf-height" type="number" min="1"></label>
+            </div>
+            <label class="conf-field"><span>LÖVE version</span><input id="conf-version" type="text" placeholder="11.5"></label>
+            <label class="setting-toggle"><span>Resizable window</span><input type="checkbox" id="conf-resizable"></label>
+            <label class="setting-toggle"><span>VSync</span><input type="checkbox" id="conf-vsync"></label>
+            <label class="setting-toggle"><span>Fullscreen</span><input type="checkbox" id="conf-fullscreen"></label>
           </div>
         </div>
       </div>
@@ -575,6 +579,7 @@ const I = {
   spark:'<path d="M12 3l1.7 4.5L18 9l-4.3 1.5L12 15l-1.7-4.5L6 9l4.3-1.5L12 3z"/><path d="M18.5 14l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2z"/>',
   search:'<circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/>',
   insert:'<path d="M12 5v14M5 12h14"/>', send:'<path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>',
+  sliders:'<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>',
 };
 function svg(name, cls) {
   return `<svg class="${cls||''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${I[name]||''}</svg>`;
@@ -851,30 +856,60 @@ function renderHistory(){
   });
 }
 
-// assets
-function readAssets(){ try { return JSON.parse(lsGet(LS.assets,'[]')); } catch(e){ return []; } }
-function writeAssets(a){ lsSet(LS.assets, JSON.stringify(a)); renderAssets(); }
-function renderAssets(){
-  const wrap=$('#asset-list'); wrap.innerHTML='';
-  const a=readAssets();
-  if (!a.length){ wrap.appendChild(elem('div',{class:'pane-empty',text:'No assets. + to add sprites / audio.'})); return; }
-  a.forEach(x=>{
-    const x2=elem('span',{class:'x',title:'Remove',html:svg('trash')});
-    x2.onclick=()=>writeAssets(readAssets().filter(y=>y.name!==x.name));
-    wrap.appendChild(elem('div',{class:'list-row',title:x.name},
-      [ elem('span',{class:'grow mono',text:x.name}), elem('span',{class:'sub',text:fmtBytes(x.size||0)}), x2 ]));
-  });
-}
 function fmtBytes(n){ if(n<1024)return n+' B'; if(n<1048576)return (n/1024).toFixed(1)+' KB'; return (n/1048576).toFixed(1)+' MB'; }
-function addAssets(fileList){
-  const a=readAssets(); let pending=fileList.length; if(!pending)return;
-  Array.from(fileList).forEach(file=>{
-    const r=new FileReader();
-    r.onload=()=>{ const rec={name:file.name,dataURL:r.result,size:file.size}; const i=a.findIndex(z=>z.name===file.name); if(i>=0)a[i]=rec; else a.push(rec); if(--pending===0){ writeAssets(a); toast(fileList.length+' asset(s) added'); } };
-    r.readAsDataURL(file);
+
+// ── Assets: stored in IndexedDB as Blobs (large quota, no base64 inflation,
+//    not capped at localStorage's ~5 MB). Records: {name, blob, size, type}.
+const IDB_NAME='loveide', IDB_VER=1, IDB_STORE='assets';
+let _idbP=null;
+function idb(){
+  if (_idbP) return _idbP;
+  _idbP=new Promise((res,rej)=>{
+    const q=indexedDB.open(IDB_NAME, IDB_VER);
+    q.onupgradeneeded=()=>{ const db=q.result; if(!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE,{keyPath:'name'}); };
+    q.onsuccess=()=>res(q.result); q.onerror=()=>rej(q.error);
+  });
+  return _idbP;
+}
+function idbReq(mode, fn){
+  return idb().then(db=>new Promise((res,rej)=>{
+    const tx=db.transaction(IDB_STORE, mode); const store=tx.objectStore(IDB_STORE);
+    let out; const r=fn(store); if(r) r.onsuccess=()=>{ out=r.result; };
+    tx.oncomplete=()=>res(out); tx.onerror=()=>rej(tx.error); tx.onabort=()=>rej(tx.error);
+  }));
+}
+const idbAllAssets = () => idbReq('readonly', s=>s.getAll()).then(r=>r||[]).catch(()=>[]);
+const idbPutAsset  = rec => idbReq('readwrite', s=>{ s.put(rec); });
+const idbDelAsset  = name => idbReq('readwrite', s=>{ s.delete(name); });
+const idbClearAssets = () => idbReq('readwrite', s=>{ s.clear(); });
+
+async function renderAssets(){
+  const wrap=$('#asset-list'); if(!wrap) return; wrap.innerHTML='';
+  const list=await idbAllAssets();
+  if (!list.length){ wrap.appendChild(elem('div',{class:'pane-empty',text:'No assets. + to add sprites / audio.'})); return; }
+  list.sort((a,b)=>a.name.localeCompare(b.name)).forEach(x=>{
+    const rm=elem('span',{class:'x',title:'Remove',html:svg('trash')});
+    rm.onclick=async()=>{ await idbDelAsset(x.name); renderAssets(); };
+    wrap.appendChild(elem('div',{class:'list-row',title:x.name},
+      [ elem('span',{class:'grow mono',text:x.name}), elem('span',{class:'sub',text:fmtBytes(x.size||0)}), rm ]));
   });
 }
-function dataURLtoBytes(d){ const b=atob(d.slice(d.indexOf(',')+1)); const u=new Uint8Array(b.length); for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i); return u; }
+async function addAssets(fileList){
+  const files=Array.from(fileList); if(!files.length) return;
+  for (const file of files){
+    try { await idbPutAsset({ name:file.name, blob:file, size:file.size, type:file.type||'' }); }
+    catch(e){ toast('Failed to store '+file.name); }
+  }
+  renderAssets();
+  toast(files.length+' asset(s) added');
+}
+// One-time migration: move any old localStorage data-URL assets into IndexedDB.
+async function migrateAssets(){
+  let old=[]; try { old=JSON.parse(lsGet(LS.assets,'[]')); } catch(e){}
+  if (!old.length) return;
+  for (const a of old){ try { const blob=await (await fetch(a.dataURL)).blob(); await idbPutAsset({ name:a.name, blob, size:a.size||blob.size, type:blob.type }); } catch(e){} }
+  lsSet(LS.assets,'[]');
+}
 
 /* ── Game settings → conf.lua (generated into the .love at build) ── */
 const CONF_DEFAULTS = { title:'Untitled', identity:'loveide-game', version:'11.5', width:800, height:600, resizable:false, vsync:true, fullscreen:false };
@@ -913,24 +948,28 @@ function wireConf(){
 }
 
 /* ── Storage meter ── */
-const STORAGE_CAP = 5 * 1024 * 1024; // localStorage budget is ~5 MB in most browsers
 function lsBytes(key){ const v=lsGet(key,null); return v==null ? 0 : (key.length + v.length) * 2; }
-function renderStorage(){
+async function renderStorage(){
   const wrap=$('#storage-body'); if(!wrap) return;
+  const assets=await idbAllAssets();
+  const assetBytes=assets.reduce((s,a)=>s+(a.size||0),0);
   const cats=[
-    { label:'main.lua', key:LS.doc, clear:null },
-    { label:'Snapshots', key:LS.hist, clear:()=>{ lsSet(LS.hist,'[]'); renderHistory(); } },
-    { label:'Assets', key:LS.assets, clear:()=>{ lsSet(LS.assets,'[]'); renderAssets(); } },
-    { label:'Libraries', key:'engine.html:libs', clear:()=>{ lsSet('engine.html:libs','[]'); renderLibs(); } },
+    { label:'main.lua',  bytes:lsBytes(LS.doc) },
+    { label:'Snapshots', bytes:lsBytes(LS.hist), clear:()=>{ lsSet(LS.hist,'[]'); renderHistory(); } },
+    { label:'Libraries', bytes:lsBytes('engine.html:libs'), clear:()=>{ lsSet('engine.html:libs','[]'); renderLibs(); } },
+    { label:'Assets (IndexedDB)', bytes:assetBytes, clear:async()=>{ await idbClearAssets(); renderAssets(); } },
   ];
-  let total=0; cats.forEach(c=>{ c.size=lsBytes(c.key); total+=c.size; });
-  const pct=Math.min(100, Math.round(total/STORAGE_CAP*100));
+  // Real origin usage/quota (covers localStorage + IndexedDB), via the
+  // StorageManager API; falls back to a summed estimate if unavailable.
+  let used=cats.reduce((s,c)=>s+c.bytes,0), quota=5*1024*1024, real=false;
+  try { if (navigator.storage && navigator.storage.estimate){ const e=await navigator.storage.estimate(); if(e && e.quota){ used=e.usage; quota=e.quota; real=true; } } } catch(e){}
+  const pct=Math.min(100, Math.round(used/quota*100));
   wrap.innerHTML='';
-  wrap.appendChild(elem('div',{class:'storage-total'},[ elem('span',{text:'Used'}), elem('b',{text:fmtBytes(total)+' / '+fmtBytes(STORAGE_CAP)}) ]));
+  wrap.appendChild(elem('div',{class:'storage-total'},[ elem('span',{text:real?'Used (this site)':'Used'}), elem('b',{text:fmtBytes(used)+' / '+fmtBytes(quota)}) ]));
   wrap.appendChild(elem('div',{class:'storage-bar'},[ elem('div',{class:'storage-fill'+(pct>90?' full':pct>70?' warn':''),style:'width:'+pct+'%'}) ]));
   cats.forEach(c=>{
-    const kids=[ elem('span',{class:'grow',text:c.label}), elem('span',{class:'val',text:fmtBytes(c.size)}) ];
-    if(c.clear && c.size>0){ const btn=elem('button',{class:'clr',text:'Clear'}); btn.onclick=()=>{ if(confirm('Clear '+c.label+'?')){ c.clear(); renderStorage(); toast(c.label+' cleared'); } }; kids.push(btn); }
+    const kids=[ elem('span',{class:'grow',text:c.label}), elem('span',{class:'val',text:fmtBytes(c.bytes)}) ];
+    if(c.clear && c.bytes>0){ const btn=elem('button',{class:'clr',text:'Clear'}); btn.onclick=async()=>{ if(confirm('Clear '+c.label+'?')){ await c.clear(); renderStorage(); toast(c.label+' cleared'); } }; kids.push(btn); }
     wrap.appendChild(elem('div',{class:'storage-row'},kids));
   });
 }
@@ -1510,7 +1549,7 @@ async function buildLoveBlob(){
   const zip=new JSZip();
   zip.file('main.lua', serialize(nb.doc));
   zip.file('conf.lua', generateConfLua());
-  for (const a of readAssets()) zip.file(a.name, dataURLtoBytes(a.dataURL));
+  for (const a of await idbAllAssets()) zip.file(a.name, a.blob);
   for (const l of readLibs()) zip.file(l.path, l.code);
   return zip.generateAsync({ type:'blob', compression:'DEFLATE' });
 }
@@ -1732,7 +1771,7 @@ function boot(){
   loadDoc();
   wire();
   renderNotebook();
-  renderAssets();
+  migrateAssets().then(renderAssets);
   renderHistory();
   renderOutline();
   renderLibs();
