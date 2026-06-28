@@ -152,7 +152,7 @@ body { font-family: var(--font-sans); background: var(--bg-tertiary); color: var
 .topbar { display: flex; align-items: center; gap: 6px; padding: 0 14px; background: var(--bg-primary); border-bottom: .5px solid var(--border-faint); flex-shrink: 0; height: 52px; }
 .topbar-logo { display: flex; align-items: center; gap: 8px; margin-right: 8px; user-select: none; }
 .topbar-logo .mark { width: 26px; height: 26px; color: var(--brand-love); }
-.topbar-logo .word { font-size: 19px; font-weight: 700; letter-spacing: .01em; }
+.topbar-logo .word { font-size: 28px; font-weight: 700; letter-spacing: .005em; line-height: 1; }
 .topbar-logo .word .b-love { color: var(--brand-love); }
 .topbar-logo .word .b-ide  { color: var(--brand-ide); }
 .topbar-sep { flex: 1; }
@@ -250,6 +250,7 @@ body { font-family: var(--font-sans); background: var(--bg-tertiary); color: var
 .pane-header { flex-shrink: 0; padding: 9px 14px; font-size: 10px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .06em; border-bottom: .5px solid var(--border-faint); background: var(--bg-secondary); display: flex; align-items: center; justify-content: space-between; }
 .pane-header .mini { cursor: pointer; color: var(--text-tertiary); display: flex; }
 .pane-header .mini:hover { color: var(--text-primary); }
+.pane-header .mini svg { width: 14px; height: 14px; }
 .pane-panel { display: none; flex: 1; overflow-y: auto; flex-direction: column; }
 .pane-panel.active { display: flex; }
 .pane-empty { color: var(--text-tertiary); font-size: 12px; font-style: italic; padding: 12px 14px; }
@@ -427,7 +428,7 @@ input[type=file] { display: none; }
       <button class="activity-bar-btn" data-tab="config" title="Config · conf.lua" data-ico="sliders"></button>
       <button class="activity-bar-btn" data-tab="libs" title="Libraries" data-ico="package"></button>
       <button class="activity-bar-btn" data-tab="api" title="LÖVE API" data-ico="book"></button>
-      <button class="activity-bar-btn" data-tab="assistant" title="AI assistant" data-ico="spark"></button>
+      <button class="activity-bar-btn" data-tab="assistant" title="AI assistant" data-ico="message-code"></button>
       <button class="activity-bar-btn" data-tab="history" title="History" data-ico="history"></button>
       <button class="activity-bar-btn act-bottom" data-tab="settings" title="Settings" data-ico="settings"></button>
     </div>
@@ -457,7 +458,7 @@ input[type=file] { display: none; }
         <div id="assistant-body" style="flex:1;min-height:0;display:flex;flex-direction:column"></div>
       </div>
       <div class="pane-panel" id="panel-history" data-tab="history">
-        <div class="pane-header">History <span class="mini" id="snap-now" title="Snapshot now" data-ico="plus"></span></div>
+        <div class="pane-header">History <span style="display:flex;gap:8px"><span class="mini" id="snap-now" title="Snapshot now" data-ico="plus"></span><span class="mini" id="snap-clear" title="Clear all snapshots" data-ico="trash"></span></span></div>
         <div id="hist-list" style="flex:1;overflow-y:auto"></div>
       </div>
       <div class="pane-panel" id="panel-settings" data-tab="settings">
@@ -535,7 +536,7 @@ input[type=file] { display: none; }
 
     <!-- right activity bar -->
     <div id="right-activity-bar" class="activity-bar">
-      <button class="activity-bar-btn active" title="Preview" data-ico="play"></button>
+      <button class="activity-bar-btn active" title="Preview" data-ico="display"></button>
     </div>
   </div>
 
@@ -580,6 +581,8 @@ const I = {
   search:'<circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/>',
   insert:'<path d="M12 5v14M5 12h14"/>', send:'<path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>',
   sliders:'<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>',
+  'message-code':'<path d="M5 4h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8l-4 4v-4H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/><path d="M10 8.5 8.2 10.5 10 12.5"/><path d="M14 8.5 15.8 10.5 14 12.5"/>',
+  display:'<rect x="2.5" y="4" width="19" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
 };
 function svg(name, cls) {
   return `<svg class="${cls||''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${I[name]||''}</svg>`;
@@ -955,7 +958,7 @@ async function renderStorage(){
   const assetBytes=assets.reduce((s,a)=>s+(a.size||0),0);
   const cats=[
     { label:'main.lua',  bytes:lsBytes(LS.doc) },
-    { label:'Snapshots', bytes:lsBytes(LS.hist), clear:()=>{ lsSet(LS.hist,'[]'); renderHistory(); } },
+    { label:'Snapshots', bytes:lsBytes(LS.hist) },
     { label:'Libraries', bytes:lsBytes('engine.html:libs'), clear:()=>{ lsSet('engine.html:libs','[]'); renderLibs(); } },
     { label:'Assets (IndexedDB)', bytes:assetBytes, clear:async()=>{ await idbClearAssets(); renderAssets(); } },
   ];
@@ -1740,6 +1743,7 @@ function wire(){
   $('#add-asset').onclick=()=>$('#asset-input').click();
   $('#asset-input').onchange=e=>{ addAssets(e.target.files); e.target.value=''; };
   $('#snap-now').onclick=()=>{ saveDoc(true); toast('Snapshot saved'); };
+  $('#snap-clear').onclick=()=>{ if(confirm('Clear all snapshots?')){ lsSet(LS.hist,'[]'); renderHistory(); renderStorage(); toast('Snapshots cleared'); } };
   $('#api-search').oninput=e=>renderApi(e.target.value);
   $('#toggle-console').onclick=()=>showConsole();
   $('#st-theme').onclick=()=>openTab('settings');
