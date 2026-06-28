@@ -1012,20 +1012,27 @@ let _loveUrl=null, _docUrl=null;
 function revokeUrls(){ if(_loveUrl){URL.revokeObjectURL(_loveUrl);_loveUrl=null;} if(_docUrl){URL.revokeObjectURL(_docUrl);_docUrl=null;} }
 function playerHTML(loveUrl){
   const o='<scr'+'ipt', c='</scr'+'ipt>';
-  // Diagnostic bridge: forward the iframe's console + errors (and its own
-  // isolation status) up to the engine.html preview console via postMessage,
-  // so love.js boot failures are visible without digging into the iframe.
+  const purl = JSON.stringify(RT.PLAYER+'?g='+encodeURIComponent(loveUrl)+'&v='+RT.VERSION);
+  // Diagnostic bridge: forward the iframe's console, errors, *resource-load
+  // failures* (capture phase — these don't bubble to window), and its own
+  // isolation status up to the engine.html preview console via postMessage.
+  // It also injects player.js with explicit onload/onerror so a 404 on the
+  // loader (or the love.js/love.wasm it pulls) is visible instead of a silent hang.
   const diag = o+'>'
     + '(function(){var P=function(k,m){try{parent.postMessage({__love:k,msg:String(m).slice(0,600)},"*")}catch(e){}};'
     + '["log","info","warn","error"].forEach(function(k){var f=console[k]?console[k].bind(console):function(){};console[k]=function(){var a=[].slice.call(arguments).map(function(x){return (x&&x.message)||x}).join(" ");P(k==="error"?"err":k==="warn"?"warn":"out",a);f.apply(null,arguments)}});'
-    + 'addEventListener("error",function(e){P("err",(e.message||"error")+(e.filename?" @"+(""+e.filename).split("/").pop()+":"+e.lineno:""))});'
+    + 'addEventListener("error",function(e){var t=e.target;if(t&&(t.src||t.href)){P("err","failed to load: "+(t.src||t.href))}else{P("err",(e.message||"error")+(e.filename?" @"+(""+e.filename).split("/").pop()+":"+e.lineno:""))}},true);'
     + 'addEventListener("unhandledrejection",function(e){P("err","unhandled: "+((e.reason&&e.reason.message)||e.reason))});'
     + 'P("out","iframe crossOriginIsolated="+self.crossOriginIsolated+", SharedArrayBuffer="+(typeof SharedArrayBuffer!=="undefined"));'
+    + 'var PURL='+purl+';P("out","loading "+PURL.split("?")[0]);'
+    + 'var s=document.createElement("script");s.src=PURL;s.crossOrigin="anonymous";'
+    + 's.onload=function(){P("out","player.js loaded; love.js should follow…")};'
+    + 's.onerror=function(){P("err","player.js FAILED to load (404 / blocked): "+s.src)};'
+    + 'document.body.appendChild(s);'
     + '})();'+c;
-  const player = o+' src="'+RT.PLAYER+'?g='+encodeURIComponent(loveUrl)+'&v='+RT.VERSION+'" crossorigin="anonymous"'+c;
   return '<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;height:100%;background:#000;overflow:hidden}canvas{display:block;margin:auto}</style></head><body>'
     + '<canvas id="canvas" oncontextmenu="event.preventDefault()"></canvas>'
-    + diag + player + '</body></html>';
+    + diag + '</body></html>';
 }
 function hookLoveMessages(){
   if (window._loveMsgHook) return; window._loveMsgHook = true;
