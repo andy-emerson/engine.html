@@ -979,7 +979,8 @@ function collapseAll(){
  * ════════════════════════════════════════════════════════════════════════════ */
 const RT = {
   JSZIP: 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js',
-  PLAYER: 'https://cdn.jsdelivr.net/gh/2dengine/love.js@master/player.js',
+  BASE: 'https://cdn.jsdelivr.net/gh/2dengine/love.js@master/',
+  get PLAYER(){ return this.BASE + 'player.js'; },
   VERSION: '11.5',
 };
 function setRuntime(state, label){
@@ -1030,7 +1031,11 @@ function playerHTML(loveUrl){
     + 's.onerror=function(){P("err","player.js FAILED to load (404 / blocked): "+s.src)};'
     + 'document.body.appendChild(s);'
     + '})();'+c;
-  return '<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;height:100%;background:#000;overflow:hidden}canvas{display:block;margin:auto}</style></head><body>'
+  // player.js fetches its engine files (lua/normalize*.lua, 11.5/love.wasm,
+  // love.worker.js) as RELATIVE URLs. The iframe doc is a blob: URL, against
+  // which relative URLs can't be parsed — so we set <base> to the 2dengine CDN
+  // dir so those resolve to where the files actually live.
+  return '<!doctype html><html><head><meta charset="utf-8"><base href="'+RT.BASE+'"><style>html,body{margin:0;height:100%;background:#000;overflow:hidden}canvas{display:block;margin:auto}</style></head><body>'
     + '<canvas id="canvas" oncontextmenu="event.preventDefault()"></canvas>'
     + diag + '</body></html>';
 }
