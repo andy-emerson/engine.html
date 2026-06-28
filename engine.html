@@ -139,8 +139,8 @@ body { font-family: var(--font-sans); background: var(--bg-tertiary); color: var
 
 #left-pane { width: 248px; flex-shrink: 0; display: flex; flex-direction: column; background: var(--bg-primary); overflow: hidden; transition: width .18s ease; }
 #left-pane.collapsed { width: 0 !important; }
-#right-pane { width: 40%; min-width: 280px; flex-shrink: 0; display: flex; flex-direction: column; background: var(--bg-primary); overflow: hidden; }
-#right-pane.collapsed { width: 0 !important; min-width: 0; }
+#right-pane { width: 460px; flex-shrink: 0; display: flex; flex-direction: column; background: var(--bg-primary); overflow: hidden; transition: width .18s ease; }
+#right-pane.collapsed { width: 0 !important; }
 
 .pane-resizer { width: 9px; flex-shrink: 0; position: relative; cursor: col-resize; background: transparent; z-index: 10; }
 .pane-resizer::before { content: ''; position: absolute; top: 0; bottom: 0; left: 50%; width: .5px; background: var(--border-faint); transition: background .15s; }
@@ -1534,11 +1534,59 @@ function switchTab(name){
   $$('#left-activity-bar .activity-bar-btn').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
   $$('#left-pane .pane-panel').forEach(p=>p.classList.toggle('active',p.dataset.tab===name));
 }
-function makeResizer(handle, pane, side){
-  let startX=0,startW=0,drag=false;
-  handle.addEventListener('mousedown',e=>{ drag=true; startX=e.clientX; startW=pane.getBoundingClientRect().width; handle.classList.add('dragging'); document.body.style.cursor='col-resize'; e.preventDefault(); });
-  window.addEventListener('mousemove',e=>{ if(!drag)return; const dx=e.clientX-startX; let w=side==='left'?startW+dx:startW-dx; w=Math.max(0,Math.min(w,window.innerWidth*0.7)); pane.style.width=w+'px'; });
-  window.addEventListener('mouseup',()=>{ if(drag){drag=false; handle.classList.remove('dragging'); document.body.style.cursor='';} });
+// Open a left tab and ensure the pane is expanded (used by status-bar links etc.)
+function openTab(name){ switchTab(name); if(PANES.left && PANES.left.isCollapsed()) PANES.left.expand(); lsSet('engine.html:leftTab',name); }
+
+/* ── Panes — oracle-style: drag to resize (clamped + persisted), and the
+ *    activity-bar buttons collapse/expand the pane. ── */
+const PANES = {};
+function setupPane(side){
+  const isLeft = side==='left';
+  const pane = $('#'+(isLeft?'left-pane':'right-pane'));
+  const resizer = $('#'+(isLeft?'left-resizer':'right-resizer'));
+  const KEY = 'engine.html:'+side+'Width';
+  const MIN = isLeft ? 190 : 300;
+  const maxW = () => isLeft ? 520 : Math.max(MIN, window.innerWidth - $('#left-pane').offsetWidth - 88 - 320);
+  const clamp = w => Math.max(MIN, Math.min(maxW(), w));
+  let saved = clamp(parseInt(lsGet(KEY,''),10) || (isLeft?248:460));
+  if (!pane.classList.contains('collapsed')) pane.style.width = saved+'px';
+  const isCollapsed = () => pane.classList.contains('collapsed');
+  function collapse(){ if(isCollapsed())return; saved=pane.offsetWidth; lsSet(KEY,saved); pane.classList.add('collapsed'); resizer.style.display='none'; }
+  function expand(){ pane.classList.remove('collapsed'); pane.style.width=clamp(saved)+'px'; resizer.style.display=''; }
+  let drag=false, sx=0, sw=0;
+  resizer.addEventListener('mousedown',e=>{ if(isCollapsed())return; drag=true; sx=e.clientX; sw=pane.offsetWidth; resizer.classList.add('dragging'); pane.style.transition='none'; document.body.style.cursor='col-resize'; document.body.style.userSelect='none'; e.preventDefault(); });
+  window.addEventListener('mousemove',e=>{ if(!drag)return; const dx=isLeft?(e.clientX-sx):(sx-e.clientX); pane.style.width=clamp(sw+dx)+'px'; });
+  window.addEventListener('mouseup',()=>{ if(!drag)return; drag=false; resizer.classList.remove('dragging'); pane.style.transition=''; document.body.style.cursor=''; document.body.style.userSelect=''; saved=pane.offsetWidth; lsSet(KEY,saved); });
+  return PANES[side]={collapse,expand,isCollapsed};
+}
+function wireActivityBars(){
+  $$('#left-activity-bar .activity-bar-btn').forEach(btn=>{
+    btn.onclick=()=>{
+      const tab=btn.dataset.tab;
+      if (!PANES.left.isCollapsed() && btn.classList.contains('active')){
+        PANES.left.collapse();
+        $$('#left-activity-bar .activity-bar-btn').forEach(b=>b.classList.remove('active'));
+        lsSet('engine.html:leftTab','');
+      } else {
+        switchTab(tab);
+        if (PANES.left.isCollapsed()) PANES.left.expand();
+        lsSet('engine.html:leftTab',tab);
+      }
+    };
+  });
+  $$('#right-activity-bar .activity-bar-btn').forEach(btn=>{
+    btn.onclick=()=>{
+      if (PANES.right.isCollapsed()){ PANES.right.expand(); btn.classList.add('active'); lsSet('engine.html:rightOpen','1'); }
+      else { PANES.right.collapse(); btn.classList.remove('active'); lsSet('engine.html:rightOpen',''); }
+    };
+  });
+}
+function restorePanes(){
+  const lt=lsGet('engine.html:leftTab', undefined);
+  if (lt===''){ PANES.left.collapse(); $$('#left-activity-bar .activity-bar-btn').forEach(b=>b.classList.remove('active')); }
+  else if (lt){ switchTab(lt); }
+  const ro=lsGet('engine.html:rightOpen','1');
+  if (ro===''){ PANES.right.collapse(); $$('#right-activity-bar .activity-bar-btn').forEach(b=>b.classList.remove('active')); }
 }
 function wire(){
   $('#btn-run').onclick=run;
@@ -1555,13 +1603,11 @@ function wire(){
   $('#snap-now').onclick=()=>{ saveDoc(true); toast('Snapshot saved'); };
   $('#api-search').oninput=e=>renderApi(e.target.value);
   $('#toggle-console').onclick=()=>showConsole();
-  $('#st-theme').onclick=()=>switchTab('settings');
-  $$('#left-activity-bar .activity-bar-btn').forEach(b=>b.onclick=()=>switchTab(b.dataset.tab));
+  $('#st-theme').onclick=()=>openTab('settings');
   $$('#seg-mode button').forEach(b=>b.onclick=()=>{ const t=getTheme(); t.mode=b.dataset.mode; setTheme(t); });
   $$('#seg-tone button').forEach(b=>b.onclick=()=>{ const t=getTheme(); t.tone=b.dataset.tone; setTheme(t); });
   const ln=$('#opt-linenums'); ln.checked=nb.opts.lineNumbers; ln.onchange=()=>{ nb.opts.lineNumbers=ln.checked; lsSet(LS.opts,JSON.stringify(nb.opts)); renderNotebook(); };
-  makeResizer($('#left-resizer'),$('#left-pane'),'left');
-  makeResizer($('#right-resizer'),$('#right-pane'),'right');
+  setupPane('left'); setupPane('right'); wireActivityBars();
   document.addEventListener('keydown',e=>{
     if ((e.metaKey||e.ctrlKey)&&e.key==='Enter'){ e.preventDefault(); run(); }
     if ((e.metaKey||e.ctrlKey)&&(e.key==='s'||e.key==='S')){ e.preventDefault(); saveDoc(true); downloadText(serialize(nb.doc),'main.lua'); toast('Saved main.lua'); }
@@ -1595,6 +1641,7 @@ function boot(){
   setDirty(false);
   setRuntime('idle');
   loadMarked();
+  restorePanes();
   registerIsolationSW();
   if (!isolated() && location.protocol!=='file:'){ setRuntime('idle','Runtime: idle (isolating…)'); }
   // try to upgrade Lua editors to CodeMirror (no-op if offline)
