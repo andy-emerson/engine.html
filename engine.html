@@ -542,7 +542,8 @@ input[type=file] { display: none; }
 
   <!-- ───────────────────────── Status bar ───────────────────────── -->
   <div class="status-bar">
-    <span class="status-item" id="st-runtime" data-ico="dot">Runtime: idle</span>
+    <span class="status-item" id="st-runtime" data-ico="dot" title="love.js preview engine">Engine: idle</span>
+    <span class="status-item status-link" id="st-agent" data-ico="dot" title="AI assistant">Agent: idle</span>
     <span class="status-item" id="st-save">Saved</span>
     <span class="status-spacer"></span>
     <span class="status-item" id="st-cells">0 cells</span>
@@ -1460,16 +1461,19 @@ function initAssistant(){
 }
 async function loadAssistant(modelId, status, btn){
   status.style.display=''; status.textContent='Loading WebLLM…'; if(btn){ btn.disabled=true; btn.textContent='Loading…'; }
+  setAgent('loading','Agent: loading');
   try {
     const webllm=await import('https://esm.run/@mlc-ai/web-llm');
     AST.engine=await webllm.CreateMLCEngine(modelId, { initProgressCallback:p=>{ status.textContent=p.text||('Loading '+modelId+'…'); } });
     AST.model=modelId;
     AST.msgs=[];
     renderAssistantChat();
+    setAgent('ready','Agent: ready');
     toast('Assistant ready');
   } catch(e){
     status.textContent='Failed to load: '+(e.message||e);
     if(btn){ btn.disabled=false; btn.textContent='Retry'; }
+    setAgent('error','Agent: error');
   }
 }
 function renderAssistantChat(){
@@ -1497,7 +1501,7 @@ function renderChatMsg(role, content){
   return el;
 }
 async function assistantSend(text){
-  AST.busy=true;
+  AST.busy=true; setAgent('loading','Agent: thinking');
   AST.msgs.push({role:'user',content:text});
   AST._msgsEl.appendChild(renderChatMsg('user',text));
   const botEl=elem('div',{class:'chat-msg bot',text:'…'});
@@ -1513,7 +1517,7 @@ async function assistantSend(text){
     const rendered=renderChatMsg('assistant',acc); botEl.replaceWith(rendered);
   } catch(e){
     botEl.classList.add('sys'); botEl.textContent='Error: '+(e.message||e);
-  } finally { AST.busy=false; AST._msgsEl.scrollTop=AST._msgsEl.scrollHeight; }
+  } finally { AST.busy=false; setAgent('ready','Agent: ready'); AST._msgsEl.scrollTop=AST._msgsEl.scrollHeight; }
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -1530,11 +1534,16 @@ const RT = {
   get PLAYER(){ return this.BASE + 'player.js'; },
   VERSION: '11.5',
 };
-function setRuntime(state, label){
-  nb.runtime=state; const el=$('#st-runtime');
-  el.className='status-item'+(state==='loading'||state==='running'?' working':state==='error'?' error':state==='ready'?' ready':'');
-  el.innerHTML=svg('dot')+' '+(label||('Runtime: '+state));
+// Lifecycle pills (Engine + Agent) share the oracle's state model:
+// idle (gray) · loading (amber) · ready/running (green) · error (red).
+function setPill(el, state, label){
+  if (!el) return;
+  const cls = state==='loading' ? ' working' : (state==='running'||state==='ready') ? ' ready' : state==='error' ? ' error' : '';
+  el.className = 'status-item' + (el.classList.contains('status-link')?' status-link':'') + cls;
+  el.innerHTML = svg('dot') + ' ' + label;
 }
+function setRuntime(state, label){ nb.runtime=state; setPill($('#st-runtime'), state, label||('Engine: '+state)); }
+function setAgent(state, label){ nb.agentState=state; setPill($('#st-agent'), state, label||('Agent: '+state)); }
 function showConsole(show){ const c=$('#console'); c.classList.toggle('hidden', show===false ? true : (show===true?false:!c.classList.contains('hidden')?true:false)); }
 function logConsole(msg,cls){ const c=$('#console'); c.classList.remove('hidden'); c.appendChild(elem('div',{class:cls||'',text:msg})); c.scrollTop=c.scrollHeight; }
 function clearConsole(){ $('#console').innerHTML=''; }
@@ -1594,7 +1603,7 @@ function hookLoveMessages(){
   window.addEventListener('message', e=>{
     const d=e.data; if(!d || typeof d!=='object' || !('__love' in d)) return;
     if (d.__love==='status' && d.msg==='running'){
-      setRuntime('running','Runtime: running');
+      setRuntime('running','Engine: running');
       logConsole('Running — click the canvas for keyboard/mouse focus.','ok');
       return;
     }
@@ -1605,7 +1614,7 @@ async function run(){
   saveDoc(true);
   clearConsole(); showConsole(true);
   if (!isolated()){
-    setRuntime('error','Runtime: needs isolation');
+    setRuntime('error','Engine: needs isolation');
     showPlaceholder();
     logConsole('Live preview needs cross-origin isolation (SharedArrayBuffer).','err');
     if (location.protocol==='file:'){
@@ -1620,9 +1629,9 @@ async function run(){
     logConsole('Export still works and runs in desktop LÖVE regardless.','dim');
     return;
   }
-  setRuntime('loading','Runtime: building .love');
+  setRuntime('loading','Engine: building .love');
   let blob; try { blob=await buildLoveBlob(); } catch(e){ setRuntime('error'); logConsole(String(e.message||e),'err'); return; }
-  setRuntime('loading','Runtime: booting love.js');
+  setRuntime('loading','Engine: booting love.js');
   logConsole('Built .love ('+fmtBytes(blob.size)+'). Booting love.js '+RT.VERSION+'… (first run downloads the WASM)','dim');
   hookLoveMessages();
   revokeUrls();
@@ -1631,7 +1640,7 @@ async function run(){
   const stage=$('#stage'); const old=stage.querySelector('iframe'); if(old)old.remove();
   hidePlaceholder();
   const frame=elem('iframe',{src:_docUrl,allow:'autoplay; fullscreen; gamepad'});
-  frame.onload=()=>{ setRuntime('loading','Runtime: booting'); logConsole('Player frame loaded — booting love.js…','dim'); };
+  frame.onload=()=>{ setRuntime('loading','Engine: booting'); logConsole('Player frame loaded — booting love.js…','dim'); };
   stage.appendChild(frame);
 }
 function stopPreview(){ const f=$('#stage').querySelector('iframe'); if(f)f.remove(); revokeUrls(); showPlaceholder(); setRuntime('idle'); logConsole('Stopped.','dim'); }
@@ -1747,6 +1756,7 @@ function wire(){
   $('#api-search').oninput=e=>renderApi(e.target.value);
   $('#toggle-console').onclick=()=>showConsole();
   $('#st-theme').onclick=()=>openTab('settings');
+  $('#st-agent').onclick=()=>openTab('assistant');
   $$('#seg-mode button').forEach(b=>b.onclick=()=>{ const t=getTheme(); t.mode=b.dataset.mode; setTheme(t); });
   $$('#seg-tone button').forEach(b=>b.onclick=()=>{ const t=getTheme(); t.tone=b.dataset.tone; setTheme(t); });
   const ln=$('#opt-linenums'); ln.checked=nb.opts.lineNumbers; ln.onchange=()=>{ nb.opts.lineNumbers=ln.checked; lsSet(LS.opts,JSON.stringify(nb.opts)); renderNotebook(); };
@@ -1785,10 +1795,11 @@ function boot(){
   initAssistant();
   setDirty(false);
   setRuntime('idle');
+  setAgent('idle');
   loadMarked();
   restorePanes();
   registerIsolationSW();
-  if (!isolated() && location.protocol!=='file:'){ setRuntime('idle','Runtime: idle (isolating…)'); }
+  if (!isolated() && location.protocol!=='file:'){ setRuntime('idle','Engine: idle (isolating…)'); }
   // try to upgrade Lua editors to CodeMirror (no-op if offline)
   upgradeAllEditors();
   // expose for console / oracle comparisons
