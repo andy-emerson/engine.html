@@ -280,6 +280,8 @@ body { font-family: var(--font-sans); background: var(--bg-tertiary); color: var
 .pane-placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; flex: 1; min-height: 140px; color: var(--text-tertiary); font-size: 12px; text-align: center; line-height: 1.6; padding: 20px 14px; }
 .pane-placeholder svg { width: 28px; height: 28px; opacity: 0.35; margin-bottom: 4px; }
 .pane-placeholder .pp-hint { font-size: 11px; opacity: 0.6; }
+/* Let a list-wrap fill its pane when it holds only an empty-state, so the placeholder centers vertically too. */
+#hist-list:has(> .pane-placeholder), #asset-list:has(> .pane-placeholder), #outline-list:has(> .pane-placeholder), #var-list:has(> .pane-placeholder), #table-list:has(> .pane-placeholder) { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
 .list-row { display: flex; align-items: center; gap: 8px; padding: 7px 14px; font-size: 12px; cursor: default; border-bottom: .5px solid var(--border-faint); }
 .list-row:hover { background: var(--bg-secondary); }
 .list-row .grow { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -317,6 +319,10 @@ body { font-family: var(--font-sans); background: var(--bg-tertiary); color: var
 .storage-row .clr:hover { border-color: var(--fn-danger); color: var(--fn-danger); }
 .storage-total { font-size: 11px; color: var(--text-tertiary); display: flex; justify-content: space-between; }
 .storage-total b { color: var(--text-primary); font-family: var(--font-mono); font-weight: 600; }
+.storage-section { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-tertiary); margin: 10px 0 2px; }
+.storage-note { font-size: 10px; color: var(--text-tertiary); margin: 2px 0 6px; line-height: 1.4; }
+.storage-warn { font-size: 11px; color: var(--fn-danger); background: var(--fn-danger-bg); border-radius: 5px; padding: 5px 8px; margin: 4px 0; line-height: 1.4; }
+.storage-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; align-items: center; }
 
 /* activity bar: push a button to the bottom (Settings) */
 .act-bottom { margin-top: auto; }
@@ -900,7 +906,8 @@ const nb = {
 };
 
 function lsGet(k,d){ try { const v=localStorage.getItem(k); return v==null?d:v; } catch(e){ return d; } }
-function lsSet(k,v){ try { localStorage.setItem(k,v); } catch(e){} }
+let _lsFull=false, _lsWarnAt=0;
+function lsSet(k,v){ try { localStorage.setItem(k,v); _lsFull=false; } catch(e){ _lsFull=true; const t=Date.now(); if(t-_lsWarnAt>8000){ _lsWarnAt=t; try{ toast('Storage full — saves are failing. Free space in Settings → Storage.'); }catch(_){} } } }
 
 function loadDoc(){ nb.doc = parse(lsGet(LS.doc, SEED)); }
 function saveDoc(snapshot){
@@ -1040,29 +1047,86 @@ function wireConf(){
 
 /* ── Storage meter ── */
 function lsBytes(key){ const v=lsGet(key,null); return v==null ? 0 : (key.length + v.length) * 2; }
+// Enumerate Cache Storage (where WebLLM keeps model weights + the love.js wasm).
+// Sizes come from content-length headers — reading multi-GB blobs to measure is
+// not viable — so a shard missing that header is under-counted.
+async function cacheBreakdown(){
+  const out={ total:0, perModel:{}, other:0, available:('caches' in window) };
+  if(!out.available) return out;
+  try {
+    for(const name of await caches.keys()){
+      const c=await caches.open(name);
+      for(const req of await c.keys()){
+        const res=await c.match(req); if(!res) continue;
+        const len=+(res.headers.get('content-length'))||0;
+        out.total+=len;
+        const m=AGENT_MODELS.find(x=>req.url.includes(x.id));
+        if(m) out.perModel[m.id]=(out.perModel[m.id]||0)+len; else out.other+=len;
+      }
+    }
+  } catch(e){ console.error('[storage] cache scan failed',e); }
+  return out;
+}
+// Delete cached entries that aren't model weights (love.js wasm, CDN libs) — they
+// re-download on next use. Models are evicted per-row via agentRemove().
+async function clearOtherCaches(){
+  if(!('caches' in window)) return;
+  for(const name of await caches.keys()){
+    const c=await caches.open(name);
+    for(const req of await c.keys()) if(!AGENT_MODELS.some(x=>req.url.includes(x.id))) await c.delete(req);
+  }
+}
 async function renderStorage(){
   const wrap=$('#storage-body'); if(!wrap) return;
   const assets=await idbAllAssets();
   const assetBytes=assets.reduce((s,a)=>s+(a.size||0),0);
-  const cats=[
-    { label:'main.lua',  bytes:lsBytes(LS.doc) },
-    { label:'Snapshots', bytes:lsBytes(LS.hist) },
-    { label:'Libraries', bytes:lsBytes('loveide:libs'), clear:()=>{ lsSet('loveide:libs','[]'); renderLibs(); } },
-    { label:'Assets (IndexedDB)', bytes:assetBytes, clear:async()=>{ await idbClearAssets(); renderAssets(); } },
-  ];
-  // Real origin usage/quota (covers localStorage + IndexedDB), via the
-  // StorageManager API; falls back to a summed estimate if unavailable.
-  let used=cats.reduce((s,c)=>s+c.bytes,0), quota=5*1024*1024, real=false;
-  try { if (navigator.storage && navigator.storage.estimate){ const e=await navigator.storage.estimate(); if(e && e.quota){ used=e.usage; quota=e.quota; real=true; } } } catch(e){}
-  const pct=Math.min(100, Math.round(used/quota*100));
+  const cache=await cacheBreakdown();
+  const lsDoc=lsBytes(LS.doc), lsHist=lsBytes(LS.hist), lsLibs=lsBytes('loveide:libs');
+  const measured=lsDoc+lsHist+lsLibs+assetBytes+cache.total;
+  // Honest quota: the StorageManager estimate is a soft, browser-granted figure
+  // (usage can exceed it), and may be absent. Never invent a fixed maximum.
+  let usage=null, quota=null, persisted=null;
+  try { if(navigator.storage&&navigator.storage.estimate){ const e=await navigator.storage.estimate(); usage=(e&&e.usage)||0; quota=(e&&e.quota)||null; } } catch(e){}
+  try { if(navigator.storage&&navigator.storage.persisted) persisted=await navigator.storage.persisted(); } catch(e){}
+  const used=(usage!=null)?usage:measured;
+  const other=(usage!=null)?Math.max(0,usage-measured):0;   // origin usage we couldn't attribute
+  const pct=(quota!=null&&quota>0)?used/quota*100:null;
+
   wrap.innerHTML='';
-  wrap.appendChild(elem('div',{class:'storage-total'},[ elem('span',{text:real?'Used (this site)':'Used'}), elem('b',{text:fmtBytes(used)+' / '+fmtBytes(quota)}) ]));
-  wrap.appendChild(elem('div',{class:'storage-bar'},[ elem('div',{class:'storage-fill'+(pct>90?' full':pct>70?' warn':''),style:'width:'+pct+'%'}) ]));
-  cats.forEach(c=>{
-    const kids=[ elem('span',{class:'grow',text:c.label}), elem('span',{class:'val',text:fmtBytes(c.bytes)}) ];
-    if(c.clear && c.bytes>0){ const btn=elem('button',{class:'clr',text:'Clear'}); btn.onclick=async()=>{ if(confirm('Clear '+c.label+'?')){ await c.clear(); renderStorage(); toast(c.label+' cleared'); } }; kids.push(btn); }
-    wrap.appendChild(elem('div',{class:'storage-row'},kids));
-  });
+  wrap.appendChild(elem('div',{class:'storage-total'},[ elem('span',{text:usage!=null?'Used (this origin)':'Used (measured)'}), elem('b',{text:fmtBytes(used)+' / '+(quota!=null?fmtBytes(quota):'unknown')}) ]));
+  if(quota!=null) wrap.appendChild(elem('div',{class:'storage-note',text:'Quota is a soft, browser-granted estimate — not a hard cap'+(pct>100?' (already exceeded).':'.')}));
+  if(pct!=null) wrap.appendChild(elem('div',{class:'storage-bar'},[ elem('div',{class:'storage-fill'+(pct>=100?' full':pct>80?' warn':''),style:'width:'+Math.min(100,pct)+'%'}) ]));
+  if(pct!=null&&pct>80) wrap.appendChild(elem('div',{class:'storage-warn',text:pct>100?'Over the soft quota — the browser may evict data and localStorage saves can fail silently.':'Near the soft quota ('+Math.round(pct)+'%) — consider freeing space.'}));
+  if(_lsFull) wrap.appendChild(elem('div',{class:'storage-warn',text:'A localStorage save recently failed (quota). Free space to avoid losing edits.'}));
+
+  const row=(label,bytes,onclear,btnLabel)=>{ const kids=[ elem('span',{class:'grow',text:label}), elem('span',{class:'val',text:fmtBytes(bytes)}) ]; if(onclear&&bytes>0){ const b=elem('button',{class:'clr',text:btnLabel||'Clear'}); b.onclick=onclear; kids.push(b); } wrap.appendChild(elem('div',{class:'storage-row'},kids)); };
+  row('main.lua', lsDoc);
+  row('Snapshots', lsHist, async()=>{ if(confirm('Clear all snapshots?')){ lsSet(LS.hist,'[]'); renderHistory(); renderStorage(); toast('Snapshots cleared'); } });
+  row('Libraries', lsLibs, async()=>{ if(confirm('Clear Libraries?')){ lsSet('loveide:libs','[]'); renderLibs(); renderStorage(); toast('Libraries cleared'); } });
+  row('Assets (IndexedDB)', assetBytes, async()=>{ if(confirm('Clear all assets?')){ await idbClearAssets(); renderAssets(); renderStorage(); toast('Assets cleared'); } });
+
+  // Agent models & cache (the multi-GB consumers the old panel never measured).
+  if(Object.keys(cache.perModel).length || cache.other>0){
+    wrap.appendChild(elem('div',{class:'storage-section',text:'Agent models & cache'}));
+    AGENT_MODELS.forEach(m=>{ const b=cache.perModel[m.id]; if(!b) return; row(m.label, b, async()=>{ if(confirm('Evict '+m.label+' ('+fmtBytes(b)+')?')){ await agentRemove(m.id); renderStorage(); toast(m.label+' evicted'); } }, 'Evict'); });
+    if(cache.other>0) row('Engine / other cache', cache.other, async()=>{ if(confirm('Clear engine / other cache? It re-downloads on next use.')){ await clearOtherCaches(); renderStorage(); toast('Cache cleared'); } });
+  }
+  if(other>0) row('Other / unaccounted', other);
+
+  // Agent usage (cost-of-use): VRAM of the active model + estimated tokens this session.
+  if(agent.activeId || agent.sessionTokens){
+    const m=AGENT_MODELS.find(x=>x.id===agent.activeId);
+    wrap.appendChild(elem('div',{class:'storage-section',text:'Agent usage (this session)'}));
+    wrap.appendChild(elem('div',{class:'storage-row'},[ elem('span',{class:'grow',text:'Active model VRAM'}), elem('span',{class:'val',text: m? fmtBytes(m.vramMB*1048576):'—'}) ]));
+    wrap.appendChild(elem('div',{class:'storage-row'},[ elem('span',{class:'grow',text:'Tokens used (est.)'}), elem('span',{class:'val',text:(agent.sessionTokens||0).toLocaleString()}) ]));
+    wrap.appendChild(elem('div',{class:'storage-row'},[ elem('span',{class:'grow',text:'Est. cost'}), elem('span',{class:'val',text:'local — free'}) ]));
+  }
+
+  const actions=elem('div',{class:'storage-actions'});
+  if(persisted===false){ const p=elem('button',{class:'clr',text:'Request persistent storage'}); p.onclick=async()=>{ try{ const ok=await navigator.storage.persist(); toast(ok?'Storage is now persistent':'Browser declined persistence'); renderStorage(); }catch(e){} }; actions.appendChild(p); }
+  else if(persisted===true) actions.appendChild(elem('span',{class:'storage-note',text:'Storage is persistent — won’t be evicted under pressure.'}));
+  const free=elem('button',{class:'clr',text:'Free up space'}); free.onclick=async()=>{ if(confirm('Evict all inactive models and clear regenerable caches? Your document and assets are kept.')){ for(const id of [...agent.installed]) if(id!==agent.activeId) await agentRemove(id); await clearOtherCaches(); renderStorage(); toast('Freed space'); } }; actions.appendChild(free);
+  wrap.appendChild(actions);
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -1660,7 +1724,7 @@ const AGENT_MODELS = [
   { id:'Qwen2.5-Coder-3B-Instruct-q4f16_1-MLC',   label:'Qwen2.5-Coder 3B',   tier:'Balanced', vramMB:2505 },
   { id:'Qwen2.5-Coder-7B-Instruct-q4f16_1-MLC',   label:'Qwen2.5-Coder 7B',   tier:'Expert',   vramMB:5107 },
 ];
-const agent = { gpu:null, llm:null, engine:null, installed:new Set(), installedChecked:false, activeId:null, busyId:null, op:'', progress:'', generating:false, error:'', messages:[] };
+const agent = { gpu:null, llm:null, engine:null, installed:new Set(), installedChecked:false, activeId:null, busyId:null, op:'', progress:'', generating:false, error:'', messages:[], sessionTokens:0 };
 function agentLabelFor(id){ const m=AGENT_MODELS.find(x=>x.id===id); return m?m.label:id; }
 function agentErr(e){ return (e&&e.message)?e.message:String(e); }
 
@@ -1845,6 +1909,7 @@ async function agentSend(text){
     const chunks=await agent.engine.chat.completions.create({ messages:convo, stream:true });
     let acc='';
     for await (const chunk of chunks){ acc += (chunk&&chunk.choices&&chunk.choices[0]&&chunk.choices[0].delta&&chunk.choices[0].delta.content)||''; agent.messages[agent.messages.length-1].content=acc; renderAgentMessages(); }
+    agent.sessionTokens += convo.reduce((n,m)=>n+estTokens(m.content),0) + estTokens(acc);
   } catch(e){ agent.messages[agent.messages.length-1].content='⚠️ '+agentErr(e); console.error('[WebLLM] generate failed',e); renderAgentMessages(); }
   agent.generating=false; syncAgentPill();
 }
