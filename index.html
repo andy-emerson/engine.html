@@ -276,6 +276,10 @@ body { font-family: var(--font-sans); background: var(--bg-tertiary); color: var
 .pane-panel { display: none; flex: 1; overflow-y: auto; flex-direction: column; }
 .pane-panel.active { display: flex; }
 .pane-empty { color: var(--text-tertiary); font-size: 12px; font-style: italic; padding: 12px 14px; }
+/* Centered empty-state for a wholly empty panel/tab (ported from the oracle's .pane-placeholder). */
+.pane-placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; flex: 1; min-height: 140px; color: var(--text-tertiary); font-size: 12px; text-align: center; line-height: 1.6; padding: 20px 14px; }
+.pane-placeholder svg { width: 28px; height: 28px; opacity: 0.35; margin-bottom: 4px; }
+.pane-placeholder .pp-hint { font-size: 11px; opacity: 0.6; }
 .list-row { display: flex; align-items: center; gap: 8px; padding: 7px 14px; font-size: 12px; cursor: default; border-bottom: .5px solid var(--border-faint); }
 .list-row:hover { background: var(--bg-secondary); }
 .list-row .grow { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -379,9 +383,6 @@ body { font-family: var(--font-sans); background: var(--bg-tertiary); color: var
 .chat-input { display: flex; gap: 5px; padding: 8px; border-top: .5px solid var(--border-faint); }
 .chat-input textarea { flex: 1; resize: none; font-family: inherit; font-size: 12px; line-height: 1.4; padding: 6px 8px; border-radius: 6px; border: .5px solid var(--border-light); background: var(--bg-secondary); color: var(--text-primary); outline: none; max-height: 110px; }
 .chat-input button { flex-shrink: 0; border: none; background: var(--fn-execute-bg); color: var(--fn-execute); border-radius: 6px; padding: 0 10px; cursor: pointer; display: flex; align-items: center; }
-.chat-setup { padding: 16px; display: flex; flex-direction: column; gap: 10px; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
-.chat-setup select { padding: 5px 8px; border:.5px solid var(--border-light); border-radius:6px; background:var(--bg-secondary); color:var(--text-primary); font-size:12px; }
-.chat-setup .secrets-btn, .chat-setup button.load { padding: 7px 10px; border-radius: 6px; border: .5px solid transparent; background: var(--fn-execute-bg); color: var(--fn-execute); font-size: 12px; cursor: pointer; }
 
 /* ════════════════════════════════════════════════════════════════════════════
  * 8. PREVIEW (right pane)
@@ -601,7 +602,7 @@ input[type=file] { display: none; }
     <!-- right activity bar -->
     <div id="right-activity-bar" class="activity-bar">
       <button class="activity-bar-btn active" data-right-tab="preview" title="Preview" data-ico="display"></button>
-      <button class="activity-bar-btn" data-right-tab="variables" title="Variables" data-ico="braces"></button>
+      <button class="activity-bar-btn" data-right-tab="variables" title="Variables" data-ico="variable"></button>
       <button class="activity-bar-btn" data-right-tab="tables" title="Tables" data-ico="table"></button>
     </div>
   </div>
@@ -662,7 +663,7 @@ const I = {
   'sliders':'<path d="M4 10a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" /><path d="M6 4v4" /><path d="M6 12v8" /><path d="M10 16a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" /><path d="M12 4v10" /><path d="M12 18v2" /><path d="M16 7a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" /><path d="M18 4v1" /><path d="M18 9v11" />',  // tabler adjustments
   'message-code':'<path d="M8 9h8" /><path d="M8 13h6" /><path d="M11.012 19.193l-3.012 1.807v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3h12a3 3 0 0 1 3 3v6" /><path d="M20 21l2 -2l-2 -2" /><path d="M17 17l-2 2l2 2" />',  // tabler message-code
   'display':'<path d="M3 5a1 1 0 0 1 1 -1h16a1 1 0 0 1 1 1v10a1 1 0 0 1 -1 1h-16a1 1 0 0 1 -1 -1v-10z" /><path d="M7 20h10" /><path d="M9 16v4" /><path d="M15 16v4" />',  // tabler device-desktop
-  'braces':'<path d="M7 4a2 2 0 0 0 -2 2v3a2 3 0 0 1 -2 3a2 3 0 0 1 2 3v3a2 2 0 0 0 2 2" /><path d="M17 4a2 2 0 0 1 2 2v3a2 3 0 0 0 2 3a2 3 0 0 0 -2 3v3a2 2 0 0 1 -2 2" />',  // tabler braces
+  'variable':'<path d="M5 4c-2.5 5 -2.5 10 0 16m14 -16c2.5 5 2.5 10 0 16m-10 -11h1c1 0 1 1 2.016 3.527c.984 2.473 .984 3.473 1.984 3.473h1" /><path d="M8 16c1.5 0 3 -2 4 -3.5s2.5 -3.5 4 -3.5" />',  // tabler variable
   'table':'<path d="M3 5a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-14z" /><path d="M3 10h18" /><path d="M10 3v18" />',  // tabler table
 };
 function svg(name, cls) {
@@ -693,6 +694,13 @@ function elem(tag, props={}, kids=[]) {
 }
 let _uid = 0; const uid = () => ++_uid;
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), 1600); }
+// Centered empty-state node: faint icon + headline + optional dim hint. Used for
+// wholly empty tabs/panels (Variables, Tables, Outline, Assets, History, Agent).
+function panePlaceholder(icon, headline, hint) {
+  const kids = [ elem('span', { html: svg(icon) }), elem('div', { text: headline }) ];
+  if (hint) kids.push(elem('div', { class: 'pp-hint', text: hint }));
+  return elem('div', { class: 'pane-placeholder' }, kids);
+}
 
 /* ════════════════════════════════════════════════════════════════════════════
  * 1. DOC MODEL — main.lua is the single source of truth.
@@ -920,7 +928,7 @@ function relTime(t){ const s=Math.round((nowMs()-t)/1000); if(s<60)return s+'s a
 function renderHistory(){
   const wrap=$('#hist-list'); wrap.innerHTML='';
   const h=readHistory();
-  if (!h.length){ wrap.appendChild(elem('div',{class:'pane-empty',text:'No snapshots yet'})); return; }
+  if (!h.length){ wrap.appendChild(panePlaceholder('history','No snapshots yet','Run to save one')); return; }
   h.forEach((e,idx)=>{
     wrap.appendChild(elem('div',{class:'list-row clickable',title:'Restore this snapshot',
       onclick:()=>{ if(confirm('Restore snapshot? Current state is snapshotted first.')){ saveDoc(true); nb.doc=parse(e.src); setDirty(true); renderNotebook(); } }},
@@ -958,7 +966,7 @@ const idbClearAssets = () => idbReq('readwrite', s=>{ s.clear(); });
 async function renderAssets(){
   const wrap=$('#asset-list'); if(!wrap) return; wrap.innerHTML='';
   const list=await idbAllAssets();
-  if (!list.length){ wrap.appendChild(elem('div',{class:'pane-empty',text:'No assets. + to add sprites / audio.'})); return; }
+  if (!list.length){ wrap.appendChild(panePlaceholder('assets','No assets','+ to add sprites / audio')); return; }
   list.sort((a,b)=>a.name.localeCompare(b.name)).forEach(x=>{
     const rm=elem('span',{class:'x',title:'Remove',html:svg('trash')});
     rm.onclick=async()=>{ await idbDelAsset(x.name); renderAssets(); };
@@ -1375,7 +1383,7 @@ function collapseAll(){
 /* ── Outline / navigator ── */
 function renderOutline(){
   const wrap=$('#outline-list'); if(!wrap) return; wrap.innerHTML='';
-  if(!nb.doc.cells.length){ wrap.appendChild(elem('div',{class:'pane-empty',text:'No cells'})); return; }
+  if(!nb.doc.cells.length){ wrap.appendChild(panePlaceholder('list','Empty notebook','Add a cell to get started')); return; }
   nb.doc.cells.forEach((c,i)=>{
     const label = c.type==='md' ? (firstLine(c.code).replace(/^#+\s*/,'')||'Markdown') : (firstLine(c.code)||'(empty)');
     const row=elem('div',{class:'list-row clickable',title:label},[
@@ -1497,7 +1505,7 @@ async function renderVariablesTab(){
   if(res.error){ wrap.appendChild(elem('div',{class:'pane-empty',text:'Parse error: '+res.error})); return; }
   appendVarSection(wrap,'Functions', res.functions.map(f=>({name:f.name+f.sig, type:f.local?'local':'global', preview:'', line:f.line})), map);
   appendVarSection(wrap,'Globals', res.globals.map(g=>({name:g.name, type:g.type, preview:g.preview, line:g.line})), map);
-  if(!res.functions.length && !res.globals.length) wrap.appendChild(elem('div',{class:'pane-empty',text:'No top-level symbols in main.lua'}));
+  if(!res.functions.length && !res.globals.length) wrap.appendChild(panePlaceholder('variable','No top-level symbols','Define functions or variables in main.lua'));
 }
 function recordsGrid(t){
   const wrap=elem('div',{class:'tbl-grid'}); const table=document.createElement('table');
@@ -1513,7 +1521,7 @@ async function renderTablesTab(){
   wrap.innerHTML='';
   if(!lp){ wrap.appendChild(elem('div',{class:'pane-empty',text:'Table grids need the Lua parser (currently offline). Names only:'})); res.tables.forEach(t=>{ const h=elem('div',{class:'tbl-head clickable'},[elem('span',{class:'grow mono',text:t.name})]); h.onclick=()=>jumpToLine(t.line,map); wrap.appendChild(h); }); return; }
   if(res.error){ wrap.appendChild(elem('div',{class:'pane-empty',text:'Parse error: '+res.error})); return; }
-  if(!res.tables.length){ wrap.appendChild(elem('div',{class:'pane-empty',text:'No top-level tables in main.lua'})); return; }
+  if(!res.tables.length){ wrap.appendChild(panePlaceholder('table','No top-level tables','Create a Lua table to see it here')); return; }
   res.tables.forEach(t=>{
     const head=elem('div',{class:'tbl-head clickable',title:'Jump to definition'},[ elem('span',{class:'grow mono',text:t.name}), elem('span',{class:'var-type',text:t.kind+' · '+t.count}) ]);
     head.onclick=()=>jumpToLine(t.line, map); wrap.appendChild(head);
@@ -1749,9 +1757,8 @@ function renderAgentTab(){
   const body=$('#assistant-body'); if(!body) return;
   if(!agent.activeId){
     const loading=!!agent.busyId;
-    body.innerHTML='<div class="chat-setup" style="text-align:center;align-items:center">'+svg('message-code')+
-      '<div><b>'+(loading?'Loading model…':'No model active')+'</b></div>'+
-      '<div style="font-size:11px;color:var(--text-tertiary)">'+(loading?'See Settings → Agent':'Activate a model in Settings → Agent')+'</div></div>';
+    body.innerHTML='';
+    body.appendChild(panePlaceholder('message-code', loading?'Loading model…':'No model active', loading?'See Settings → Agent':'Activate a model in Settings → Agent'));
     return;
   }
   body.innerHTML='';
@@ -1765,6 +1772,7 @@ function renderAgentTab(){
 }
 function renderAgentMessages(){
   const box=$('#agent-messages'); if(!box) return; box.innerHTML='';
+  if(!agent.messages.length){ box.appendChild(panePlaceholder('spark','Ask about your game','It can see your main.lua, conf, and recent console')); return; }
   agent.messages.forEach(m=>{
     const el=elem('div',{class:'chat-msg '+(m.role==='user'?'user':'bot')});
     if(m.role==='user') el.textContent=m.content; else el.innerHTML = m.content? renderMarkdownHTML(m.content) : '<span style="opacity:.5">…</span>';

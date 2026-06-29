@@ -92,6 +92,14 @@ The chat is otherwise **blind** — no real Sight, no Hands.
 3. **Secrets/remote:** resolve the BYO-key decision (provider = Anthropic +
    OpenAI-compatible?; storage = localStorage + "don't save" + sanitized model
    output, vs passphrase-encrypted). Required for Step 3.
+4. **Token/context management — revisit the strategy.** `buildContext()` landed
+   (full current `main.lua` + conf + recent Console each turn, bounded history,
+   `context_window_size` raised to 8192) — an improvement, but we can likely do
+   better: token-accurate counting (not the `chars/4` heuristic); smarter
+   relevance when a file is large (focused / referenced cells vs whole source);
+   summarizing old turns instead of hard-dropping them; per-backend budgets; and
+   confirming the window override actually takes effect and is sized to real VRAM
+   (the browser can't read free VRAM, so this is currently a manual dial).
 
 ---
 
@@ -111,6 +119,24 @@ The chat is otherwise **blind** — no real Sight, no Hands.
   cross-origin-isolated; the runtime can't be exercised in the dev sandbox (CDN
   egress blocked there).
 - **Export polish** — fused web build option; asset drag-and-drop into the .love.
+- **Storage management — fix the "maximum" + measure more, manage more.** The panel
+  shows `used / quota`, but the quota is misleading: when `navigator.storage.estimate()`
+  is unavailable it falls back to a **5 MB** localStorage-era guess (so IndexedDB
+  assets sail "over maximum"), and even the real `estimate().quota` is a *soft,
+  browser-granted* figure, not a hard cap — label it as such and never present it
+  as a fixed limit. Bigger gap: `used` (real origin usage) includes large consumers
+  the per-row breakdown never measures — above all the **WebLLM model weights cached
+  in the Cache API (multi-GB)** plus the love.js WASM / CDN caches — so `used` vastly
+  exceeds the summed rows, which is confusing. Wanted:
+  - **More measured categories/rows:** an **Agents / models** row (cached model
+    weights, per model, with evict), a **Packages / libraries** row, and a
+    **cost-of-use** measure — VRAM of the active model now; token / \$ cost once
+    remote backends land (Step 3).
+  - **More management actions:** evict individual model caches, clear the love.js /
+    CDN / service-worker cache, prune old snapshots (ties to the History autosave
+    redesign), and a near-quota warning.
+  - **Honest accounting:** reconcile the category breakdown with real origin usage
+    so the rows sum to (or visibly explain the gap with) the reported total.
 
 ### Adapted from the oracle's backlog (unaudited — pending review)
 - **Automated integration tests** — a Playwright suite driving the real
