@@ -2,10 +2,10 @@
 
 A single-file, in-browser IDE for authoring **LÖVE (Love2D)** games — a
 notebook-style view over a real `main.lua` with a live love.js preview. The
-whole app is one file, `engine.html`. (An independent community tool, not
+whole app is one file, `index.html`. (An independent community tool, not
 affiliated with or endorsed by the LÖVE project.)
 
-Open `engine.html` in a browser. No build step, no install.
+Open `index.html` in a browser. No build step, no install.
 
 ## The core idea
 
@@ -50,15 +50,15 @@ The preview builds a `.love` in the browser (JSZip) and boots it with
 it must be served over http(s)/localhost (not `file://`).
 
 **Hosted (e.g. GitHub Pages):** keep `coi-serviceworker.js` (included) next to
-`engine.html`. It's the [gzuidhof](https://github.com/gzuidhof/coi-serviceworker)
+`index.html`. It's the [gzuidhof](https://github.com/gzuidhof/coi-serviceworker)
 service-worker trick — it injects the `COOP`/`COEP` headers so isolation just
-works on a static host with no config. engine.html registers it automatically
+works on a static host with no config. index.html registers it automatically
 and reloads once to gain isolation. (Verified: when served with isolation, the
 page reports `crossOriginIsolated === true` and Run proceeds to build the
 `.love` and boot love.js.)
 
 **Local:** with `coi-serviceworker.js` alongside it, any localhost server works —
-e.g. `python3 -m http.server`, then open `http://localhost:8000/engine.html`.
+e.g. `python3 -m http.server`, then open `http://localhost:8000/index.html`.
 
 When isolation is missing, **Run** prints exactly what to do in the console.
 Everything else (editing, the doc model, Markdown, and **Export .love**) works

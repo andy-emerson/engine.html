@@ -1,6 +1,6 @@
 # LoveIDE — design
 
-The reference document for how `engine.html` is built and why. Architecture
+The reference document for how `index.html` is built and why. Architecture
 first, then the process we follow, then a per-subsystem status/divergence ledger.
 For the live roadmap see `TODO.md`; for the working agreement see `CLAUDE.md`.
 
@@ -9,7 +9,7 @@ For the live roadmap see `TODO.md`; for the working agreement see `CLAUDE.md`.
 ## 1. What LoveIDE is
 
 A **single-file, in-browser notebook IDE for authoring LÖVE (Love2D) games**.
-Open `engine.html`, write Lua in cells, hit Run, and a real LÖVE game boots in an
+Open `index.html`, write Lua in cells, hit Run, and a real LÖVE game boots in an
 iframe — no install, no toolchain. Export produces a standard `.love` that
 desktop LÖVE runs unchanged.
 
@@ -68,7 +68,7 @@ assets in IndexedDB.
 
 ## 3. Subsystems
 
-Mirrors the numbered banner sections in `engine.html` (JS sections 0–10).
+Mirrors the numbered banner sections in `index.html` (JS sections 0–10).
 
 | # | Subsystem | Role | Key surface |
 |---|-----------|------|-------------|
@@ -170,7 +170,7 @@ Coarse, per-subsystem. Status is the highest claim rung currently justified.
 | conf.lua | **B** | `generateConfLua`, defaults, Game-settings panel. |
 | Agent — local | **browser-only** | WebLLM manager (Qwen2.5-Coder 1.5B/3B/7B), install/activate, VRAM gate, streaming chat. Untestable in sandbox (no GPU). Chat is otherwise **blind** — Sight v0 sends raw `main.lua` only. |
 | Agent — Sight/Hands/Modes/Backends | **S** | Designed in `TODO.md` (Steps 1–10); not built. |
-| Hosting | **B** | GitHub Pages from `main`; `coi-serviceworker.js` grants isolation; `index.html` redirects root → `engine.html`. |
+| Hosting | **B** | GitHub Pages from `main`; `coi-serviceworker.js` grants isolation; the app is served directly as `index.html` (root). |
 
 When a row's rung changes or a new divergence is decided, update it here in the
 same commit as the code change.

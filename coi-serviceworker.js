@@ -1,11 +1,11 @@
 /*! coi-serviceworker v0.1.7 — Guido Zuidhof, MIT.
  *  https://github.com/gzuidhof/coi-serviceworker
  *
- *  OPTIONAL HELPER for engine.html. love.js needs SharedArrayBuffer, which only
+ *  OPTIONAL HELPER for index.html. love.js needs SharedArrayBuffer, which only
  *  exists in a cross-origin-isolated page (COOP: same-origin + COEP: require-corp).
- *  Drop this file next to engine.html and the live preview works on any static
+ *  Drop this file next to index.html and the live preview works on any static
  *  host (GitHub Pages, `python3 -m http.server` on localhost, etc.) with NO server
- *  header config — this service worker injects the headers for you. engine.html
+ *  header config — this service worker injects the headers for you. index.html
  *  registers it automatically when present; it does nothing on file:// (service
  *  workers require a secure context: https or localhost).
  */

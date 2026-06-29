@@ -1,6 +1,6 @@
 # LoveIDE — TODO
 
-Working notes for `engine.html` (the app is one file). Led by the agent plan,
+Working notes for `index.html` (the app is one file). Led by the agent plan,
 followed by the rest of the backlog and open questions.
 
 ---
@@ -124,5 +124,5 @@ The chat is otherwise **blind** — no real Sight, no Hands.
 
 ## Hosting
 Live on GitHub Pages from `main`; `coi-serviceworker.js` grants the cross-origin
-isolation love.js needs with no server config. `index.html` redirects the site
-root to `engine.html`.
+isolation love.js needs with no server config. The app is served directly as
+`index.html`, so it loads at the site root with no redirect.

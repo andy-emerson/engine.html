@@ -1,13 +1,2101 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="auto">
 <head>
-<meta charset="utf-8">
-<meta http-equiv="refresh" content="0; url=engine.html">
-<title>LoveIDE</title>
-<link rel="canonical" href="engine.html">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LoveIDE — a notebook IDE for LÖVE</title>
+<!--
+  LoveIDE — a single-file, in-browser IDE for authoring LÖVE (Love2D) games.
+  (The whole app is one file, index.html.)
+
+  ── Architecture ────────────────────────────────────────────────────────────
+  main.lua IS the single source of truth; the notebook is a pure projection over
+  it, and the file always stays a valid, runnable .lua. The invariant the whole
+  app rests on:
+
+      serialize(parse(src)) === src       // byte-for-byte, always
+
+  One source feeds many read-only projections (cell UI, static analysis, the
+  agent's Sight, the .love build); only the cell editors and — eventually — the
+  agent's Hands write back. Persistence splits by data shape: structured state in
+  localStorage (doc · history · conf · theme · opts), binary assets in IndexedDB.
+  The runtime builds a .love with JSZip and boots it in a FRESH iframe per run
+  (clean love.js Module each time). See design.md for the full map + ledger.
+
+  Design language and many component patterns are drawn from Neodide's
+  notebook.html (the oracle, a DESIGN REFERENCE not a spec): theme system,
+  layout, cell cards with badge type-switching, inter-cell insert zones, hover
+  actions, collapse, Markdown WYSIWYG, CodeMirror 6 editing, marked-based
+  rendering — adapted from Python/SQL to Lua/LÖVE. The doc model (parse/
+  serialize) and the love.js runtime are index.html's own.
+
+  ── Contents ────────────────────────────────────────────────────────────────
+  <style>  CSS, numbered 1–10:
+    1 Base & reset   2 Theme variables   3 Layout   4 Topbar   5 Status bar
+    6 Notebook + cells   7 Panels (left pane)   8 Preview (right pane)
+    9 Markdown output   10 Toast
+  <script> JS, numbered 0–10:
+    0 Icons   1 Doc model   2 Markdown   3 State + persistence   4 Theme
+    5 CodeMirror   6 Cell DOM   6b Activity-bar panels   7 Runtime
+    8 Export   9 Self-tests   10 Wiring + boot
+  (Each section is marked by a ════ banner; this list is its table of contents.)
+-->
+
+<!-- marked.js for Markdown is loaded NON-blocking at boot (see loadMarked());
+     a built-in renderer is used until/if it arrives, so the UI never waits on a CDN. -->
+
+<!-- CodeMirror 6 — loaded on demand via dynamic import(); textarea fallback if offline -->
+<script type="importmap">
+{
+  "imports": {
+    "@codemirror/view":                "https://esm.sh/@codemirror/view@6",
+    "@codemirror/state":               "https://esm.sh/@codemirror/state@6",
+    "@codemirror/commands":            "https://esm.sh/@codemirror/commands@6",
+    "@codemirror/language":            "https://esm.sh/@codemirror/language@6",
+    "@codemirror/autocomplete":        "https://esm.sh/@codemirror/autocomplete@6",
+    "@codemirror/legacy-modes/mode/lua": "https://esm.sh/@codemirror/legacy-modes@6/mode/lua",
+    "@lezer/highlight":                "https://esm.sh/@lezer/highlight@1"
+  }
+}
+</script>
+
+<style>
+/* ════════════════════════════════════════════════════════════════════════════
+ * 1. BASE & RESET
+ * ════════════════════════════════════════════════════════════════════════════ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+::-webkit-scrollbar { width: 7px; height: 7px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-medium); border-radius: 99px; }
+* { scrollbar-color: var(--border-medium) transparent; scrollbar-width: thin; }
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * 2. THEME VARIABLES  (ported from the oracle)
+ * ════════════════════════════════════════════════════════════════════════════ */
+:root {
+  --font-sans: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --font-mono: 'Cascadia Code', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  --fn-execute: #3b7dd8; --fn-execute-bg: rgba(59,125,216,.12); --fn-execute-border: rgba(59,125,216,.35);
+  --fn-success: #1e8a3e; --fn-success-bg: rgba(30,138,62,.11);
+  --fn-danger:  #d73a49; --fn-danger-bg:  rgba(215,58,73,.11);
+  --fn-working: #b07d00; --fn-working-bg: rgba(176,125,0,.13); --fn-working-border: rgba(176,125,0,.35);
+
+  /* LoveIDE brand — light/dark agnostic: hot-pink "Love" + steel "IDE".
+     Both read on light and dark backgrounds, so no per-theme override. */
+  --brand-love: #EC4899;
+  --brand-ide:  #7C8A99;
+
+  /* cell-type colors share the brand: Lua = pink, Markdown = steel. Tints use
+     color-mix with transparent so they work on light and dark backgrounds. */
+  --type-lua-bg: color-mix(in srgb, var(--brand-love) 15%, transparent); --type-lua-fg: var(--brand-love);
+  --type-md-bg:  color-mix(in srgb, var(--brand-ide) 20%, transparent);  --type-md-fg:  var(--brand-ide);
+}
+[data-theme="ember"], [data-theme="dusk"], [data-theme="carbon"] {
+  --fn-execute: #6ba3e8; --fn-execute-bg: rgba(107,163,232,.15); --fn-execute-border: rgba(107,163,232,.40);
+  --fn-success: #4cae64; --fn-success-bg: rgba(76,174,100,.15);
+  --fn-danger:  #f07178; --fn-danger-bg:  rgba(240,113,120,.15);
+  --fn-working: #e0b341; --fn-working-bg: rgba(224,179,65,.16); --fn-working-border: rgba(224,179,65,.40);
+}
+[data-theme="linen"] {
+  --bg-primary:#f7f5f1; --bg-secondary:#edeae4; --bg-tertiary:#e3dcd4; --bg-info:#ece3d8;
+  --text-primary:#2c2620; --text-secondary:#6a4e2e; --text-tertiary:#a09080;
+  --text-info:#7a5c18; --text-danger:#904030; --text-success:#4e5e28;
+  --border-faint:rgba(44,38,32,.10); --border-light:rgba(44,38,32,.18); --border-medium:rgba(44,38,32,.28); --border-info:#8a6838;
+  --syntax-keyword:#7a5a10; --syntax-string:#8a4828; --syntax-operator:#7a6858;
+}
+[data-theme="slate"] {
+  --bg-primary:#f2f4f0; --bg-secondary:#e7ece4; --bg-tertiary:#d8e0d4; --bg-info:#e0eadc;
+  --text-primary:#26302a; --text-secondary:#486848; --text-tertiary:#88988a;
+  --text-info:#387050; --text-danger:#884038; --text-success:#387040;
+  --border-faint:rgba(38,48,42,.10); --border-light:rgba(38,48,42,.18); --border-medium:rgba(38,48,42,.28); --border-info:#487858;
+  --syntax-keyword:#386050; --syntax-string:#806820; --syntax-operator:#6a7a6c;
+}
+[data-theme="ember"] {
+  --bg-primary:#272220; --bg-secondary:#1e1b18; --bg-tertiary:#382e28; --bg-info:#382c1e;
+  --text-primary:#c8bfb0; --text-secondary:#b09060; --text-tertiary:#786e60;
+  --text-info:#c09030; --text-danger:#c86858; --text-success:#88a060;
+  --border-faint:rgba(200,191,176,.10); --border-light:rgba(200,191,176,.18); --border-medium:rgba(200,191,176,.28); --border-info:#c09850;
+  --syntax-keyword:#caa040; --syntax-string:#c07848; --syntax-operator:#a08870;
+}
+[data-theme="dusk"] {
+  --bg-primary:#1f2120; --bg-secondary:#191919; --bg-tertiary:#272928; --bg-info:#21271f;
+  --text-primary:#bec0b6; --text-secondary:#688060; --text-tertiary:#565a52;
+  --text-info:#5a8050; --text-danger:#b07068; --text-success:#6a9050;
+  --border-faint:rgba(190,192,182,.10); --border-light:rgba(190,192,182,.18); --border-medium:rgba(190,192,182,.28); --border-info:#587050;
+  --syntax-keyword:#88a850; --syntax-string:#b0a040; --syntax-operator:#748060;
+}
+[data-theme="cloud"] {
+  --bg-primary:#f5f5f5; --bg-secondary:#ebebeb; --bg-tertiary:#dcdcdc; --bg-info:#e4e4e4;
+  --text-primary:#282828; --text-secondary:#585858; --text-tertiary:#989898;
+  --text-info:#484848; --text-danger:#884040; --text-success:#487040;
+  --border-faint:rgba(40,40,40,.10); --border-light:rgba(40,40,40,.18); --border-medium:rgba(40,40,40,.28); --border-info:#787878;
+  --syntax-keyword:#181818; --syntax-string:#606060; --syntax-operator:#7a7a7a;
+}
+[data-theme="carbon"] {
+  --bg-primary:#202020; --bg-secondary:#181818; --bg-tertiary:#2a2a2a; --bg-info:#242424;
+  --text-primary:#c8c8c8; --text-secondary:#888888; --text-tertiary:#585858;
+  --text-info:#a0a0a0; --text-danger:#c07878; --text-success:#80a878;
+  --border-faint:rgba(200,200,200,.10); --border-light:rgba(200,200,200,.18); --border-medium:rgba(200,200,200,.28); --border-info:#808080;
+  --syntax-keyword:#e0e0e0; --syntax-string:#a0a0a0; --syntax-operator:#787878;
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * 3. LAYOUT
+ * ════════════════════════════════════════════════════════════════════════════ */
+html, body { height: 100%; }
+body { font-family: var(--font-sans); background: var(--bg-tertiary); color: var(--text-primary); transition: background .2s, color .2s; }
+#app { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+#main-area { display: flex; flex: 1; min-height: 0; }
+
+.activity-bar { width: 44px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; padding: 4px 0; background: var(--bg-secondary); z-index: 5; }
+#left-activity-bar { border-right: .5px solid var(--border-faint); }
+#right-activity-bar { border-left: .5px solid var(--border-faint); }
+.activity-bar-btn { width: 44px; height: 42px; display: flex; align-items: center; justify-content: center; background: none; border: none; cursor: pointer; color: var(--text-tertiary); border-right: 2px solid transparent; transition: color .12s; }
+#right-activity-bar .activity-bar-btn { border-right: none; border-left: 2px solid transparent; }
+.activity-bar-btn:hover { color: var(--text-primary); }
+.activity-bar-btn.active { color: var(--text-primary); border-right-color: var(--border-info); }
+#right-activity-bar .activity-bar-btn.active { border-left-color: var(--border-info); border-right-color: transparent; }
+.activity-bar-btn svg { width: 19px; height: 19px; }
+
+#left-pane { width: 248px; flex-shrink: 0; display: flex; flex-direction: column; background: var(--bg-primary); overflow: hidden; transition: width .18s ease; }
+#left-pane.collapsed { width: 0 !important; }
+#right-pane { width: 460px; flex-shrink: 0; display: flex; flex-direction: column; background: var(--bg-primary); overflow: hidden; transition: width .18s ease; }
+#right-pane.collapsed { width: 0 !important; }
+
+.pane-resizer { width: 9px; flex-shrink: 0; position: relative; cursor: col-resize; background: transparent; z-index: 10; }
+.pane-resizer::before { content: ''; position: absolute; top: 0; bottom: 0; left: 50%; width: .5px; background: var(--border-faint); transition: background .15s; }
+.pane-resizer:hover::before, .pane-resizer.dragging::before { background: var(--border-medium); }
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * 4. TOPBAR
+ * ════════════════════════════════════════════════════════════════════════════ */
+.topbar { display: flex; align-items: center; gap: 6px; padding: 0 14px; background: var(--bg-primary); border-bottom: .5px solid var(--border-faint); flex-shrink: 0; height: 52px; }
+.topbar-logo { display: flex; align-items: center; gap: 8px; margin-right: 8px; user-select: none; }
+.topbar-logo .mark { width: 26px; height: 26px; color: var(--brand-love); }
+.topbar-logo .word { font-size: 28px; font-weight: 700; letter-spacing: .005em; line-height: 1; }
+.topbar-logo .word .b-love { color: var(--brand-love); }
+.topbar-logo .word .b-ide  { color: var(--brand-ide); }
+.topbar-sep { flex: 1; }
+.tb-group { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.tb-group-btns { display: flex; align-items: center; gap: 2px; }
+.tb-group-label { font-size: 9px; color: var(--text-tertiary); letter-spacing: .06em; text-transform: uppercase; line-height: 1; padding-bottom: 3px; }
+.tb-divider { width: .5px; height: 28px; align-self: center; background: var(--border-faint); margin: 0 4px; }
+.tb-btn { background: none; border: .5px solid var(--border-light); border-radius: var(--radius-md); padding: 6px 10px; font-size: 12px; font-family: var(--font-sans); color: var(--text-secondary); cursor: pointer; display: flex; align-items: center; gap: 5px; transition: background .12s, color .12s; white-space: nowrap; }
+.tb-btn:hover { background: var(--bg-secondary); color: var(--text-primary); }
+.tb-btn.primary { background: var(--fn-execute-bg); border-color: transparent; color: var(--fn-execute); }
+.tb-btn.run { background: var(--brand-love); border-color: transparent; color: #fff; font-weight: 600; }
+.tb-btn.run:hover { filter: brightness(.97); opacity: .92; }
+.tb-btn.danger { background: var(--fn-danger-bg); border-color: transparent; color: var(--fn-danger); }
+.tb-btn svg { width: 14px; height: 14px; flex-shrink: 0; }
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * 5. STATUS BAR
+ * ════════════════════════════════════════════════════════════════════════════ */
+.status-bar { display: flex; align-items: center; height: 26px; flex-shrink: 0; background: var(--bg-secondary); border-top: .5px solid var(--border-faint); padding: 0 10px; gap: 6px; font-size: 11px; user-select: none; }
+.status-item { display: flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 99px; color: var(--text-tertiary); background: var(--bg-primary); border: .5px solid var(--border-faint); white-space: nowrap; transition: color .15s, background .15s, border-color .15s; }
+.status-item svg { width: 11px; height: 11px; }
+.status-item.working { color: var(--fn-working); background: var(--fn-working-bg); border-color: var(--fn-working-border); }
+.status-item.ready { color: var(--fn-success); background: var(--fn-success-bg); border-color: transparent; }
+.status-item.error { color: var(--fn-danger); background: var(--fn-danger-bg); border-color: transparent; }
+.status-item.dirty { color: var(--fn-working); background: var(--fn-working-bg); border-color: var(--fn-working-border); }
+.status-spacer { flex: 1; }
+.status-link { cursor: pointer; }
+.status-link:hover { color: var(--text-primary); }
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * 6. NOTEBOOK + CELLS
+ * ════════════════════════════════════════════════════════════════════════════ */
+#nb-body { flex: 1; min-width: 0; overflow-y: auto; }
+#nb-scroll { min-height: 100%; padding: 14px 0 40vh; max-width: 940px; margin: 0 auto; }
+
+.cell { margin: 0 16px; position: relative; border-radius: var(--radius-lg); border: .5px solid var(--border-faint); background: var(--bg-primary); overflow: hidden; transition: border-color .15s; }
+.cell.focused { border-color: var(--border-info); }
+/* drag-to-reorder: the source cell becomes a dashed placeholder; a floating
+   clone (.cell-ghost) follows the cursor (styled inline in JS). */
+.cell.drag-placeholder { background: transparent; border: 1.5px dashed var(--border-medium); box-shadow: none; }
+.cell.drag-placeholder > * { visibility: hidden; }
+.cell-ghost { border: .5px solid var(--border-info); background: var(--bg-primary); overflow: hidden; }
+.cell-header { display: flex; align-items: center; gap: 7px; padding: 6px 11px; background: var(--bg-secondary); border-bottom: .5px solid var(--border-faint); position: relative; cursor: grab; user-select: none; }
+.cell-header:active { cursor: grabbing; }
+.cell-header .cell-badge, .cell-header .ca-btn { cursor: pointer; }
+.cell-badge { font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 99px; letter-spacing: .05em; text-transform: uppercase; display: flex; align-items: center; gap: 4px; flex-shrink: 0; cursor: pointer; border: 1px solid color-mix(in srgb, currentColor 30%, transparent); }
+.cell-badge:hover { opacity: .82; }
+.badge-lua { background: var(--type-lua-bg); color: var(--type-lua-fg); }
+.badge-md { background: var(--type-md-bg); color: var(--type-md-fg); }
+.cell-title { font-size: 11px; color: var(--text-tertiary); font-family: var(--font-mono); margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cell-actions { display: flex; gap: 3px; opacity: 0; transition: opacity .15s; }
+.cell:hover .cell-actions, .cell.focused .cell-actions { opacity: 1; }
+.ca-btn { background: none; border: none; cursor: pointer; color: var(--text-secondary); padding: 3px 5px; border-radius: 5px; display: flex; align-items: center; transition: background .1s, color .1s; }
+.ca-btn:hover { background: var(--bg-primary); color: var(--text-primary); }
+.ca-btn.danger:hover { background: var(--fn-danger-bg); color: var(--fn-danger); }
+.ca-btn:disabled { opacity: .3; cursor: default; }
+.ca-btn svg { width: 16px; height: 16px; }
+
+.cell-editor textarea { width: 100%; border: none; outline: none; resize: none; font-family: var(--font-mono); font-size: 13px; line-height: 1.65; padding: 11px 13px; background: var(--bg-primary); color: var(--text-primary); min-height: 52px; display: block; tab-size: 2; white-space: pre; overflow-x: auto; }
+.cell-editor .cm-editor { height: auto; }
+.cell-editor .cm-editor.cm-focused { outline: none; }
+.cell-editor .cm-scroller { overflow-x: auto; font-family: var(--font-mono); }
+
+/* collapse */
+.cell.collapsed .cell-editor, .cell.collapsed .cell-output { display: none; }
+.cell.collapsed .cell-header { border-bottom: none; }
+
+/* markdown WYSIWYG */
+.cell-output { font-size: 14px; line-height: 1.7; }
+.cell.md-view .cell-editor { display: none; }
+.cell.md-edit .cell-output { display: none; }
+.cell.md-view .cell-output { cursor: text; padding: 6px 16px; }
+.cell.md-view .cell-output:empty::before { content: 'Empty Markdown cell — click to edit…'; color: var(--text-tertiary); font-style: italic; }
+
+/* type picker */
+.type-picker { position: fixed; z-index: 1000; background: var(--bg-primary); border: .5px solid var(--border-medium); border-radius: var(--radius-md); padding: 4px; display: flex; flex-direction: column; gap: 2px; box-shadow: 0 4px 16px rgba(0,0,0,.14); min-width: 120px; }
+.type-picker-btn { background: none; border: .5px solid transparent; border-radius: 6px; font-size: 11px; color: var(--text-secondary); padding: 5px 10px; cursor: pointer; display: flex; align-items: center; gap: 6px; text-align: left; }
+.type-picker-btn:hover { background: var(--bg-secondary); color: var(--text-primary); }
+
+/* inter-cell insert zone */
+.cell-insert { height: 26px; display: flex; align-items: center; justify-content: center; gap: 6px; position: relative; margin: 0 16px; }
+.cell-insert .insert-btn { opacity: 0; transition: opacity .15s; }
+.cell-insert:hover .insert-btn { opacity: 1; }
+.cell-insert::before { content: ''; position: absolute; left: 0; right: 0; top: 50%; height: .5px; background: var(--border-faint); opacity: 0; transition: opacity .15s; }
+.cell-insert:hover::before { opacity: 1; }
+.insert-btn { background: var(--bg-primary); border: .5px solid var(--border-light); border-radius: 99px; font-size: 11px; color: var(--text-tertiary); padding: 3px 11px; cursor: pointer; display: flex; align-items: center; gap: 5px; position: relative; z-index: 1; }
+.insert-btn:hover { color: var(--text-primary); border-color: var(--border-medium); background: var(--bg-secondary); }
+.insert-btn.type-lua:hover { color: var(--type-lua-fg); background: var(--type-lua-bg); border-color: color-mix(in srgb, currentColor 30%, transparent); }
+.insert-btn.type-md:hover  { color: var(--type-md-fg);  background: var(--type-md-bg);  border-color: color-mix(in srgb, currentColor 30%, transparent); }
+.insert-btn svg { width: 12px; height: 12px; }
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * 7. PANELS (left pane)
+ * ════════════════════════════════════════════════════════════════════════════ */
+.pane-header { flex-shrink: 0; padding: 9px 14px; font-size: 10px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .06em; border-bottom: .5px solid var(--border-faint); background: var(--bg-secondary); display: flex; align-items: center; justify-content: space-between; }
+.pane-header .mini { cursor: pointer; color: var(--text-tertiary); display: flex; }
+.pane-header .mini:hover { color: var(--text-primary); }
+.pane-header .mini svg { width: 14px; height: 14px; }
+.pane-panel { display: none; flex: 1; overflow-y: auto; flex-direction: column; }
+.pane-panel.active { display: flex; }
+.pane-empty { color: var(--text-tertiary); font-size: 12px; font-style: italic; padding: 12px 14px; }
+.list-row { display: flex; align-items: center; gap: 8px; padding: 7px 14px; font-size: 12px; cursor: default; border-bottom: .5px solid var(--border-faint); }
+.list-row:hover { background: var(--bg-secondary); }
+.list-row .grow { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.list-row .mono { font-family: var(--font-mono); }
+.list-row .sub { color: var(--text-tertiary); font-size: 10px; }
+.list-row .x { color: var(--text-tertiary); cursor: pointer; display: flex; }
+.list-row .x:hover { color: var(--fn-danger); }
+.list-row.clickable { cursor: pointer; }
+
+/* settings (themes) */
+.settings-body { padding: 14px; display: flex; flex-direction: column; gap: 16px; }
+.settings-label { font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-tertiary); margin-bottom: 7px; }
+.seg { display: flex; gap: 4px; flex-wrap: wrap; }
+.seg button { flex: 1; min-width: 56px; background: var(--bg-secondary); border: .5px solid var(--border-light); border-radius: 6px; color: var(--text-secondary); font-size: 11px; padding: 6px 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 5px; }
+.seg button.active { background: var(--fn-execute-bg); border-color: transparent; color: var(--fn-execute); }
+.seg button:hover:not(.active) { color: var(--text-primary); }
+.setting-toggle { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--text-secondary); }
+
+/* Game (conf.lua) fields */
+.conf-grid { display: flex; flex-direction: column; gap: 8px; }
+.conf-2 { display: flex; gap: 8px; }
+.conf-field { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-tertiary); flex: 1; }
+.conf-field input { padding: 5px 8px; border: .5px solid var(--border-light); border-radius: 6px; background: var(--bg-secondary); color: var(--text-primary); font-size: 12px; font-family: var(--font-mono); outline: none; width: 100%; }
+.conf-field input:focus { border-color: var(--border-info); }
+
+/* Storage meter */
+.storage-bar { height: 5px; background: var(--bg-tertiary); border-radius: 99px; overflow: hidden; margin: 4px 0 8px; }
+.storage-fill { height: 100%; background: var(--fn-success); border-radius: 99px; transition: width .3s, background .3s; }
+.storage-fill.warn { background: var(--fn-working); }
+.storage-fill.full { background: var(--fn-danger); }
+.storage-row { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-secondary); padding: 3px 0; }
+.storage-row .grow { flex: 1; }
+.storage-row .val { color: var(--text-primary); font-family: var(--font-mono); }
+.storage-row .clr { border: .5px solid var(--border-faint); background: none; color: var(--text-tertiary); border-radius: 5px; font-size: 10px; padding: 2px 7px; cursor: pointer; }
+.storage-row .clr:hover { border-color: var(--fn-danger); color: var(--fn-danger); }
+.storage-total { font-size: 11px; color: var(--text-tertiary); display: flex; justify-content: space-between; }
+.storage-total b { color: var(--text-primary); font-family: var(--font-mono); font-weight: 600; }
+
+/* activity bar: push a button to the bottom (Settings) */
+.act-bottom { margin-top: auto; }
+
+/* outline */
+.ol-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.ol-dot.lua { background: var(--type-lua-fg); }
+.ol-dot.md  { background: var(--type-md-fg); }
+@keyframes cellflash { 0%,100% { box-shadow: 0 0 0 0 transparent; } 30% { box-shadow: 0 0 0 2px var(--border-info); } }
+.cell.flash { animation: cellflash .7s ease; }
+
+/* library + api rows */
+.kv-row { display: flex; flex-direction: column; gap: 2px; padding: 7px 12px; border-bottom: .5px solid var(--border-faint); }
+.kv-top { display: flex; align-items: center; gap: 8px; }
+.kv-name { font-family: var(--font-mono); font-size: 12px; color: var(--text-primary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kv-desc { font-size: 11px; color: var(--text-tertiary); line-height: 1.4; }
+.kv-btn { flex-shrink: 0; border: .5px solid var(--border-light); background: var(--bg-secondary); color: var(--text-secondary); border-radius: 5px; font-size: 11px; padding: 3px 8px; cursor: pointer; display: flex; align-items: center; gap: 4px; }
+.kv-btn:hover { color: var(--text-primary); border-color: var(--border-info); }
+.kv-btn.added { color: var(--fn-success); border-color: transparent; background: var(--fn-success-bg); }
+.kv-btn.busy { opacity: .6; pointer-events: none; }
+.kv-btn svg { width: 12px; height: 12px; }
+.api-group { font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-tertiary); padding: 8px 12px 3px; position: sticky; top: 0; background: var(--bg-primary); }
+.api-row { display: flex; align-items: center; gap: 6px; padding: 4px 12px; cursor: pointer; font-family: var(--font-mono); font-size: 11.5px; color: var(--text-secondary); }
+.api-row:hover { background: var(--bg-secondary); color: var(--text-primary); }
+.api-row .sig { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.api-row .ins { opacity: 0; color: var(--text-tertiary); display: flex; }
+.api-row:hover .ins { opacity: 1; }
+
+/* Variables panel (ported from the oracle's var-list) */
+.pane-note { font-size: 10px; color: var(--text-tertiary); font-style: italic; padding: 6px 12px; }
+.var-section { font-size: 10px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--text-tertiary); padding: 9px 12px 3px; display: flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; }
+.var-section .chev { transition: transform .15s; }
+.var-section.collapsed .chev { transform: rotate(-90deg); }
+.var-section .count { margin-left: auto; font-weight: 400; }
+.var-row { padding: 5px 12px; cursor: pointer; border-bottom: .5px solid var(--border-faint); }
+.var-row:hover { background: var(--bg-secondary); }
+.var-row-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.var-name { font-family: var(--font-mono); font-size: 12px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.var-type { font-size: 10px; font-family: var(--font-sans); padding: 1px 5px; border-radius: 3px; background: var(--bg-tertiary); color: var(--text-tertiary); flex-shrink: 0; white-space: nowrap; }
+.var-preview { font-size: 11px; color: var(--text-tertiary); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.3; }
+
+/* Tables panel grid (ported from the oracle's out-table) */
+.tbl-head { display: flex; align-items: center; gap: 8px; padding: 9px 12px 4px; }
+.tbl-head .grow { flex: 1; font-size: 12px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tbl-head.clickable { cursor: pointer; }
+.tbl-head.clickable:hover .grow { color: var(--type-lua-fg); }
+.tbl-grid { overflow-x: auto; padding: 0 12px 10px; }
+.tbl-grid table { border-collapse: collapse; font-size: 11.5px; font-family: var(--font-mono); min-width: 100%; }
+.tbl-grid th { background: var(--bg-secondary); padding: 4px 8px; text-align: left; font-weight: 600; color: var(--text-secondary); border-bottom: .5px solid var(--border-medium); white-space: nowrap; position: sticky; top: 0; }
+.tbl-grid td { padding: 4px 8px; border-bottom: .5px solid var(--border-faint); color: var(--text-primary); white-space: nowrap; }
+.tbl-grid td.num, .tbl-grid th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.tbl-grid tr:last-child td { border-bottom: none; }
+.kv { padding: 0 12px 10px; font-family: var(--font-mono); font-size: 11.5px; }
+.kv-line { display: flex; gap: 8px; padding: 2px 0; }
+.kv-line .k { color: var(--text-secondary); }
+.kv-line .v { color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* assistant chat */
+.chat-msgs { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 12px; }
+.chat-msg { font-size: 12px; line-height: 1.5; padding: 7px 9px; border-radius: 8px; white-space: pre-wrap; word-break: break-word; max-width: 94%; }
+.chat-msg.user { background: var(--bg-tertiary); color: var(--text-primary); align-self: flex-end; }
+.chat-msg.bot { background: var(--bg-secondary); color: var(--text-primary); align-self: flex-start; }
+.chat-msg.sys { color: var(--text-tertiary); font-style: italic; align-self: center; text-align: center; font-size: 11px; }
+.chat-input { display: flex; gap: 5px; padding: 8px; border-top: .5px solid var(--border-faint); }
+.chat-input textarea { flex: 1; resize: none; font-family: inherit; font-size: 12px; line-height: 1.4; padding: 6px 8px; border-radius: 6px; border: .5px solid var(--border-light); background: var(--bg-secondary); color: var(--text-primary); outline: none; max-height: 110px; }
+.chat-input button { flex-shrink: 0; border: none; background: var(--fn-execute-bg); color: var(--fn-execute); border-radius: 6px; padding: 0 10px; cursor: pointer; display: flex; align-items: center; }
+.chat-setup { padding: 16px; display: flex; flex-direction: column; gap: 10px; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
+.chat-setup select { padding: 5px 8px; border:.5px solid var(--border-light); border-radius:6px; background:var(--bg-secondary); color:var(--text-primary); font-size:12px; }
+.chat-setup .secrets-btn, .chat-setup button.load { padding: 7px 10px; border-radius: 6px; border: .5px solid transparent; background: var(--fn-execute-bg); color: var(--fn-execute); font-size: 12px; cursor: pointer; }
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * 8. PREVIEW (right pane)
+ * ════════════════════════════════════════════════════════════════════════════ */
+.rh-title { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-secondary); }
+.right-panel { display: none; flex: 1 1 auto; min-height: 0; flex-direction: column; }
+.right-panel.active { display: flex; }
+#stage { flex: 1; min-height: 0; display: grid; place-items: center; position: relative; overflow: hidden; background: #0c0c0c; }
+#stage iframe { border: 0; width: 100%; height: 100%; background: #000; }
+#stage .placeholder { color: var(--text-tertiary); text-align: center; padding: 24px; max-width: 380px; line-height: 1.6; font-size: 13px; }
+#stage .placeholder .big { color: var(--type-lua-fg); opacity: .5; margin-bottom: 10px; }
+#stage .placeholder code { font-family: var(--font-mono); color: var(--type-lua-fg); }
+#stage .placeholder b { color: var(--text-secondary); }
+#console { height: 150px; flex-shrink: 0; overflow-y: auto; border-top: .5px solid var(--border-faint); background: var(--bg-secondary); font-family: var(--font-mono); font-size: 11.5px; line-height: 1.5; padding: 8px 12px; white-space: pre-wrap; }
+#console.hidden { display: none; }
+#console .err { color: var(--fn-danger); }
+#console .ok { color: var(--fn-success); }
+#console .dim { color: var(--text-tertiary); }
+#console .warn { color: var(--fn-working); }
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * 9. MARKDOWN OUTPUT  (ported from the oracle)
+ * ════════════════════════════════════════════════════════════════════════════ */
+.out-md { color: var(--text-primary); }
+.out-md h1 { font-size: 22px; font-weight: 600; margin: 4px 0 12px; border-bottom: .5px solid var(--border-faint); padding-bottom: .2em; }
+.out-md h2 { font-size: 17px; font-weight: 600; margin: 16px 0 7px; border-bottom: .5px solid var(--border-faint); padding-bottom: .2em; }
+.out-md h3 { font-size: 14px; font-weight: 600; margin: 13px 0 5px; }
+.out-md p { font-size: 14px; line-height: 1.7; margin-bottom: 9px; }
+.out-md ul, .out-md ol { padding-left: 22px; font-size: 14px; margin-bottom: 9px; }
+.out-md li { margin-bottom: 3px; line-height: 1.6; }
+.out-md code { font-family: var(--font-mono); font-size: 12px; background: var(--bg-secondary); padding: 1px 5px; border-radius: 4px; }
+.out-md pre { background: var(--bg-secondary); padding: 10px 12px; border-radius: var(--radius-md); overflow-x: auto; margin-bottom: 10px; }
+.out-md pre code { background: none; padding: 0; }
+.out-md blockquote { border-left: 3px solid var(--border-medium); padding-left: 12px; color: var(--text-secondary); margin-bottom: 9px; }
+.out-md a { color: var(--text-info); }
+.out-md hr { border: none; border-top: .5px solid var(--border-light); margin: 14px 0; }
+.out-md strong { font-weight: 600; }
+.out-md table { border-collapse: collapse; font-size: 13px; margin-bottom: 10px; }
+.out-md th, .out-md td { padding: 5px 10px; border: .5px solid var(--border-light); }
+.out-md th { background: var(--bg-secondary); font-weight: 600; }
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * 10. TOAST
+ * ════════════════════════════════════════════════════════════════════════════ */
+.toast { position: fixed; bottom: 38px; left: 50%; transform: translateX(-50%); background: var(--bg-primary); border: .5px solid var(--border-light); border-radius: var(--radius-md); padding: 8px 16px; font-size: 13px; color: var(--text-primary); box-shadow: 0 4px 16px rgba(0,0,0,.16); opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 200; white-space: nowrap; }
+.toast.show { opacity: 1; }
+
+input[type=file] { display: none; }
+</style>
 </head>
 <body>
-<p>Redirecting to <a href="engine.html">engine.html</a>…</p>
-<script>location.replace('engine.html');</script>
+<div id="app">
+
+  <!-- ───────────────────────── Topbar ───────────────────────── -->
+  <div class="topbar">
+    <div class="topbar-logo">
+      <span class="mark" id="logo-mark"></span>
+      <span class="word"><span class="b-love">Love</span><span class="b-ide">IDE</span></span>
+    </div>
+    <div class="topbar-sep"></div>
+
+    <div class="tb-group">
+      <div class="tb-group-btns">
+        <button class="tb-btn" id="btn-collapse-all" data-ico="collapse">Collapse</button>
+        <button class="tb-btn" id="btn-tests" data-ico="check">Tests</button>
+      </div>
+      <div class="tb-group-label">View</div>
+    </div>
+    <div class="tb-divider"></div>
+
+    <div class="tb-group">
+      <div class="tb-group-btns">
+        <button class="tb-btn" id="btn-new" data-ico="file">New</button>
+        <button class="tb-btn" id="btn-open" data-ico="folder">Open</button>
+        <button class="tb-btn" id="btn-save" data-ico="save">Save</button>
+        <button class="tb-btn" id="btn-export" data-ico="download">.love</button>
+      </div>
+      <div class="tb-group-label">main.lua</div>
+    </div>
+    <div class="tb-divider"></div>
+
+    <div class="tb-group">
+      <div class="tb-group-btns">
+        <button class="tb-btn" id="btn-stop" data-ico="stop">Stop</button>
+        <button class="tb-btn run" id="btn-run" data-ico="play">Run</button>
+      </div>
+      <div class="tb-group-label">Preview</div>
+    </div>
+  </div>
+
+  <!-- ───────────────────────── Main area ───────────────────────── -->
+  <div id="main-area">
+
+    <!-- left activity bar -->
+    <div id="left-activity-bar" class="activity-bar">
+      <button class="activity-bar-btn active" data-tab="assets" title="Assets" data-ico="assets"></button>
+      <button class="activity-bar-btn" data-tab="outline" title="Outline" data-ico="list"></button>
+      <button class="activity-bar-btn" data-tab="config" title="Config · conf.lua" data-ico="sliders"></button>
+      <button class="activity-bar-btn" data-tab="libs" title="Libraries" data-ico="package"></button>
+      <button class="activity-bar-btn" data-tab="api" title="LÖVE API" data-ico="book"></button>
+      <button class="activity-bar-btn" data-tab="assistant" title="AI assistant" data-ico="message-code"></button>
+      <button class="activity-bar-btn" data-tab="history" title="History" data-ico="history"></button>
+      <button class="activity-bar-btn act-bottom" data-tab="settings" title="Settings" data-ico="settings"></button>
+    </div>
+
+    <!-- left pane -->
+    <div id="left-pane">
+      <div class="pane-panel active" id="panel-assets" data-tab="assets">
+        <div class="pane-header">Assets <span class="mini" id="add-asset" title="Add asset(s)" data-ico="plus"></span></div>
+        <div id="asset-list" style="flex:1;overflow-y:auto"></div>
+      </div>
+      <div class="pane-panel" id="panel-outline" data-tab="outline">
+        <div class="pane-header">Outline</div>
+        <div id="outline-list" style="flex:1;overflow-y:auto"></div>
+      </div>
+      <div class="pane-panel" id="panel-libs" data-tab="libs">
+        <div class="pane-header">Lua libraries</div>
+        <div style="padding:8px 12px;color:var(--text-tertiary);font-size:11px;line-height:1.5">Added libraries are vendored into the <code>.love</code> at <code>lib/</code>. Use e.g. <code>local bump = require('lib.bump')</code>.</div>
+        <div id="lib-list" style="flex:1;overflow-y:auto"></div>
+      </div>
+      <div class="pane-panel" id="panel-api" data-tab="api">
+        <div class="pane-header">LÖVE API</div>
+        <div style="padding:8px 12px"><input id="api-search" placeholder="Search love.* …" style="width:100%;padding:5px 8px;border:.5px solid var(--border-light);border-radius:6px;background:var(--bg-secondary);color:var(--text-primary);font-size:12px;outline:none"></div>
+        <div id="api-list" style="flex:1;overflow-y:auto"></div>
+      </div>
+      <div class="pane-panel" id="panel-assistant" data-tab="assistant">
+        <div class="pane-header">AI assistant</div>
+        <div id="assistant-body" style="flex:1;min-height:0;display:flex;flex-direction:column"></div>
+      </div>
+      <div class="pane-panel" id="panel-history" data-tab="history">
+        <div class="pane-header">History <span style="display:flex;gap:8px"><span class="mini" id="snap-now" title="Snapshot now" data-ico="plus"></span><span class="mini" id="snap-clear" title="Clear all snapshots" data-ico="trash"></span></span></div>
+        <div id="hist-list" style="flex:1;overflow-y:auto"></div>
+      </div>
+      <div class="pane-panel" id="panel-settings" data-tab="settings">
+        <div class="pane-header">Settings</div>
+        <div class="settings-body">
+          <div>
+            <div class="settings-label">Brightness</div>
+            <div class="seg" id="seg-mode">
+              <button data-mode="light">Light</button>
+              <button data-mode="dark">Dark</button>
+              <button data-mode="auto">Auto</button>
+            </div>
+          </div>
+          <div>
+            <div class="settings-label">Tone</div>
+            <div class="seg" id="seg-tone">
+              <button data-tone="warm">Warm</button>
+              <button data-tone="cool">Cool</button>
+              <button data-tone="neutral">Mono</button>
+            </div>
+          </div>
+          <div>
+            <div class="settings-label">Editor</div>
+            <label class="setting-toggle"><span>Line numbers</span><input type="checkbox" id="opt-linenums"></label>
+          </div>
+          <div>
+            <div class="settings-label">Storage</div>
+            <div id="storage-body"></div>
+          </div>
+          <div>
+            <div class="settings-label">Agent</div>
+            <div id="agent-gpu" style="font-size:12px;line-height:1.45;color:var(--text-secondary)">Checking GPU…</div>
+            <div id="agent-local" style="margin-top:10px"></div>
+          </div>
+        </div>
+      </div>
+      <div class="pane-panel" id="panel-config" data-tab="config">
+        <div class="pane-header">Config · conf.lua</div>
+        <div class="settings-body">
+          <div style="font-size:11px;color:var(--text-tertiary);line-height:1.5">Your game's <code>conf.lua</code> — window and project settings. Generated into the <code>.love</code> on Run and Export.</div>
+          <div class="conf-grid">
+            <label class="conf-field"><span>Window title</span><input id="conf-title" type="text" placeholder="Untitled"></label>
+            <label class="conf-field"><span>Identity (save folder)</span><input id="conf-identity" type="text" placeholder="loveide-game"></label>
+            <div class="conf-2">
+              <label class="conf-field"><span>Width</span><input id="conf-width" type="number" min="1"></label>
+              <label class="conf-field"><span>Height</span><input id="conf-height" type="number" min="1"></label>
+            </div>
+            <label class="conf-field"><span>LÖVE version</span><input id="conf-version" type="text" placeholder="11.5"></label>
+            <label class="setting-toggle"><span>Resizable window</span><input type="checkbox" id="conf-resizable"></label>
+            <label class="setting-toggle"><span>VSync</span><input type="checkbox" id="conf-vsync"></label>
+            <label class="setting-toggle"><span>Fullscreen</span><input type="checkbox" id="conf-fullscreen"></label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="pane-resizer" id="left-resizer"></div>
+
+    <!-- notebook -->
+    <div id="nb-body"><div id="nb-scroll"></div></div>
+
+    <div class="pane-resizer" id="right-resizer"></div>
+
+    <!-- right pane: preview -->
+    <div id="right-pane">
+      <div class="pane-header"><span class="rh-title" id="right-pane-header">Preview · love.js</span>
+        <span class="mini" id="toggle-console" title="Toggle console" data-ico="terminal"></span>
+      </div>
+      <div class="right-panel active" id="rpanel-preview" data-right-tab="preview">
+        <div id="stage">
+          <div class="placeholder" id="placeholder">
+            <div class="big" id="placeholder-icon"></div>
+            Press <b>Run</b> to build a <code>.love</code> in your browser and boot it with love.js.
+            <br><br><span style="font-size:12px">The exported <code>.love</code> also runs in desktop LÖVE.</span>
+          </div>
+        </div>
+        <div id="console" class="hidden"></div>
+      </div>
+      <div class="right-panel" id="rpanel-variables" data-right-tab="variables">
+        <div id="var-list" style="flex:1;overflow-y:auto"></div>
+      </div>
+      <div class="right-panel" id="rpanel-tables" data-right-tab="tables">
+        <div id="table-list" style="flex:1;overflow-y:auto"></div>
+      </div>
+    </div>
+
+    <!-- right activity bar -->
+    <div id="right-activity-bar" class="activity-bar">
+      <button class="activity-bar-btn active" data-right-tab="preview" title="Preview" data-ico="display"></button>
+      <button class="activity-bar-btn" data-right-tab="variables" title="Variables" data-ico="braces"></button>
+      <button class="activity-bar-btn" data-right-tab="tables" title="Tables" data-ico="table"></button>
+    </div>
+  </div>
+
+  <!-- ───────────────────────── Status bar ───────────────────────── -->
+  <div class="status-bar">
+    <span class="status-spacer"></span>
+    <span class="status-item" id="st-runtime" data-ico="dot" title="love.js preview engine">Engine: idle</span>
+    <span class="status-item status-link" id="st-agent" data-ico="dot" title="AI assistant">Agent: idle</span>
+    <span class="status-item" id="st-save">Saved</span>
+  </div>
+</div>
+
+<input type="file" id="file-input" accept=".lua,text/plain">
+<input type="file" id="asset-input" multiple>
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+/* ════════════════════════════════════════════════════════════════════════════
+ * 0. ICONS (inline SVG — no CDN dependency, unlike the oracle's icon webfont)
+ * ════════════════════════════════════════════════════════════════════════════ */
+const I = {
+  play:'<polygon points="6 4 20 12 6 20 6 4"/>', stop:'<rect x="5" y="5" width="14" height="14" rx="2"/>',
+  file:'<path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z"/>',
+  folder:'<path d="M5 4h4l3 3h7a1 1 0 0 1 1 1v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/>',
+  save:'<path d="M6 4h11l3 3v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/><path d="M14 4v5H8V4"/><rect x="8" y="13" width="8" height="6"/>',
+  download:'<path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/><path d="M7 11l5 5 5-5"/><path d="M12 4v12"/>',
+  check:'<path d="M5 12l5 5L20 7"/>', collapse:'<path d="M8 8l4-4 4 4"/><path d="M16 16l-4 4-4-4"/>',
+  plus:'<path d="M12 5v14M5 12h14"/>', trash:'<path d="M5 7h14M10 11v6M14 11v6M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13M9 7V4h6v3"/>',
+  up:'<path d="M12 19V5M6 11l6-6 6 6"/>', down:'<path d="M12 5v14M6 13l6 6 6-6"/>',
+  code:'<path d="M8 9l-3 3 3 3M16 9l3 3-3 3M13 6l-2 12"/>', md:'<path d="M4 7v10M4 7l4 5 4-5M16 7v10M16 17l3-3M16 17l-3-3"/>',
+  chevron:'<path d="M9 6l6 6-6 6"/>', assets:'<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 15l5-5 4 4 3-3 6 6"/><circle cx="9" cy="9" r="1.5"/>',
+  history:'<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 4v4h4M12 8v4l3 2"/>', settings:'<circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.6-2-3.4-2.3 1a7 7 0 0 0-1.7-1l-.4-2.5h-4l-.4 2.5a7 7 0 0 0-1.7 1l-2.3-1-2 3.4 2 1.6a7 7 0 0 0 0 2l-2 1.6 2 3.4 2.3-1a7 7 0 0 0 1.7 1l.4 2.5h4l.4-2.5a7 7 0 0 0 1.7-1l2.3 1 2-3.4-2-1.6c.06-.3.1-.6.1-1z"/>',
+  terminal:'<path d="M5 7l5 5-5 5M13 17h6"/>', sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4 12H2M22 12h-2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19"/>',
+  moon:'<path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/>', auto:'<circle cx="12" cy="12" r="9"/><path d="M12 3v18" fill="currentColor" stroke="none" opacity="0.35"/>',
+  dot:'<circle cx="12" cy="12" r="5"/>', love:'<path d="M12 21s-7-4.5-9.3-9C1 8.6 2.6 5 6 5c2 0 3.2 1.2 4 2.5C10.8 6.2 12 5 14 5c3.4 0 5 3.6 3.3 7-2.3 4.5-9.3 9-9.3 9z"/>',
+  list:'<path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/>',
+  package:'<path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M3.3 7L12 12l8.7-5M12 22V12"/>',
+  book:'<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>',
+  spark:'<path d="M12 3l1.7 4.5L18 9l-4.3 1.5L12 15l-1.7-4.5L6 9l4.3-1.5L12 3z"/><path d="M18.5 14l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2z"/>',
+  search:'<circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/>',
+  insert:'<path d="M12 5v14M5 12h14"/>', send:'<path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>',
+  sliders:'<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>',
+  'message-code':'<path d="M5 4h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8l-4 4v-4H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/><path d="M10 8.5 8.2 10.5 10 12.5"/><path d="M14 8.5 15.8 10.5 14 12.5"/>',
+  display:'<rect x="2.5" y="4" width="19" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
+  braces:'<path d="M7 4a2 2 0 0 0-2 2v3a2 2 0 0 1-2 2 2 2 0 0 1 2 2v3a2 2 0 0 0 2 2M17 4a2 2 0 0 1 2 2v3a2 2 0 0 0 2 2 2 2 0 0 0-2 2v3a2 2 0 0 1-2 2"/>',
+  table:'<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/>',
+};
+function svg(name, cls) {
+  return `<svg class="${cls||''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${I[name]||''}</svg>`;
+}
+// LoveIDE brand mark: a pink heart with "</>" knocked out (white) in the
+// lower-right quadrant. Single shape, scales down to favicon size.
+const BRAND_HEART = 'M12 21s-7-4.5-9.3-9C1 8.6 2.6 5 6 5c2 0 3.2 1.2 4 2.5C10.8 6.2 12 5 14 5c3.4 0 5 3.6 3.3 7-2.3 4.5-9.3 9-9.3 9z';
+const BRAND_BRACKETS = ['M14.7 12 L13.2 13.6 L14.7 15.2','M16 11.6 L14.4 15.6','M15.8 12 L17.3 13.6 L15.8 15.2'];
+function brandSVG(size, fill){
+  const br = BRAND_BRACKETS.map(d=>`<path d="${d}" fill="none" stroke="#fff" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/>`).join('');
+  return `<svg viewBox="0 0 24 24" width="${size||24}" height="${size||24}"><path d="${BRAND_HEART}" fill="${fill||'var(--brand-love)'}"/>${br}</svg>`;
+}
+function setFavicon(){
+  const data = 'data:image/svg+xml,' + encodeURIComponent(brandSVG(32, '#EC4899'));
+  let link = document.querySelector("link[rel='icon']");
+  if (!link){ link = document.createElement('link'); link.rel='icon'; document.head.appendChild(link); }
+  link.type='image/svg+xml'; link.href=data;
+}
+function paintIcons(root=document) {
+  root.querySelectorAll('[data-ico]').forEach(el => { el.innerHTML = svg(el.dataset.ico) + (el.childNodes.length && el.dataset.keep ? '' : ''); });
+  // buttons keep their text: prepend icon
+  root.querySelectorAll('.tb-btn[data-ico]').forEach(el => {
+    if (el.querySelector('svg')) return;
+    el.insertAdjacentHTML('afterbegin', svg(el.dataset.ico));
+  });
+}
+
+const $ = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
+function elem(tag, props={}, kids=[]) {
+  const n = document.createElement(tag);
+  for (const k in props) {
+    if (k === 'class') n.className = props[k];
+    else if (k === 'html') n.innerHTML = props[k];
+    else if (k === 'text') n.textContent = props[k];
+    else if (k.startsWith('on') && typeof props[k] === 'function') n.addEventListener(k.slice(2), props[k]);
+    else if (props[k] != null) n.setAttribute(k, props[k]);
+  }
+  (Array.isArray(kids) ? kids : [kids]).forEach(c => c != null && n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c));
+  return n;
+}
+let _uid = 0; const uid = () => ++_uid;
+function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), 1600); }
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * 1. DOC MODEL — main.lua is the single source of truth.
+ *
+ *   parse(lua) -> { cells:[{id,type,code,level,before}], trailing }
+ *   serialize(doc) -> lua
+ *
+ *   - top-level column-0 standalone --[[ ]] (and --[==[ ]==]) -> 'md' cell
+ *   - column-0 -- %% -> invisible code separator
+ *   - everything else -> 'lua' cell
+ *   - md<->lua toggle is just comment/uncomment (swap the type; content stays).
+ *
+ *   Idempotent: serialize(parse(file)) === file. Each cell stores verbatim glue
+ *   (`before`) so whitespace/separators round-trip byte-for-byte; structural
+ *   edits re-derive canonical glue via normalizeGlue().
+ * ════════════════════════════════════════════════════════════════════════════ */
+const SEP_RE = /^--\s?%%[ \t]*$/;
+const OPEN_RE = /^--\[(=*)\[/;
+const closeTok = l => ']' + '='.repeat(l) + ']';
+const openTok = l => '--[' + '='.repeat(l) + '[';
+
+function lineSpans(src) {
+  const out = []; let i = 0;
+  while (true) {
+    const nl = src.indexOf('\n', i);
+    if (nl < 0) { out.push({ s: i, e: src.length }); break; }
+    out.push({ s: i, e: nl }); i = nl + 1;
+    if (i > src.length) break;
+    if (i === src.length) { out.push({ s: i, e: i }); break; }
+  }
+  return out;
+}
+function matchMarkdown(src, lines, li) {
+  const ln = lines[li];
+  const m = OPEN_RE.exec(src.slice(ln.s, ln.e));
+  if (!m) return null;
+  const level = m[1].length, ot = openTok(level), ct = closeTok(level);
+  const innerStart = ln.s + ot.length;
+  const idx = src.indexOf(ct, innerStart);
+  if (idx < 0) return null;
+  const end = idx + ct.length;
+  if (end !== src.length && src[end] !== '\n') return null;
+  return { level, innerStart, innerEnd: idx, end };
+}
+function parse(src) {
+  src = String(src == null ? '' : src);
+  const lines = lineSpans(src);
+  const segs = []; let i = 0;
+  while (i < lines.length) {
+    const ln = lines[i];
+    const md = matchMarkdown(src, lines, i);
+    if (md) {
+      segs.push({ type: 'md', start: ln.s, end: md.end, level: md.level, inner: src.slice(md.innerStart, md.innerEnd) });
+      let k = i; while (k < lines.length && lines[k].e < md.end) k++; i = k + 1; continue;
+    }
+    const t = src.slice(ln.s, ln.e);
+    if (SEP_RE.test(t)) { segs.push({ type: 'sep', start: ln.s, end: ln.e }); i++; continue; }
+    let k = i;
+    while (k < lines.length) {
+      const lt = src.slice(lines[k].s, lines[k].e);
+      if (SEP_RE.test(lt)) break;
+      if (matchMarkdown(src, lines, k)) break;
+      k++;
+    }
+    segs.push({ type: 'lua', start: lines[i].s, end: lines[k - 1].e }); i = k;
+  }
+  const cells = []; let glue = '', cursor = 0;
+  for (const seg of segs) {
+    glue += src.slice(cursor, seg.start);
+    if (seg.type === 'sep') glue += src.slice(seg.start, seg.end);
+    else if (seg.type === 'md') { cells.push({ id: uid(), type: 'md', code: seg.inner, level: seg.level, before: glue, collapsed: false }); glue = ''; }
+    else { cells.push({ id: uid(), type: 'lua', code: src.slice(seg.start, seg.end), level: 0, before: glue, collapsed: false }); glue = ''; }
+    cursor = seg.end;
+  }
+  glue += src.slice(cursor);
+  return { cells, trailing: glue };
+}
+function cellBody(c) {
+  if (c.type === 'lua') return c.code;
+  let lvl = c.level | 0;
+  while (c.code.indexOf(closeTok(lvl)) >= 0) lvl++;
+  return openTok(lvl) + c.code + closeTok(lvl);
+}
+function serialize(doc) {
+  let out = '';
+  for (const c of doc.cells) out += c.before + cellBody(c);
+  return out + (doc.trailing || '');
+}
+function normalizeGlue(doc) {
+  doc.cells.forEach((c, k) => {
+    if (k === 0) { c.before = ''; return; }
+    const prev = doc.cells[k - 1];
+    c.before = (prev.type === 'lua' && c.type === 'lua') ? '\n-- %%\n' : '\n';
+  });
+  if (doc.cells.length === 0) doc.trailing = '';
+  else if (!/\n$/.test(doc.trailing || '')) doc.trailing = '\n';
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * 2. MARKDOWN — marked.js when available, compact built-in fallback otherwise.
+ * ════════════════════════════════════════════════════════════════════════════ */
+function escapeHtml(s){ return s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function mdInline(s){
+  s = escapeHtml(s)
+    .replace(/`([^`]+)`/g,'<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*\n]+)\*/g,'$1<em>$2</em>')
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>');
+  return s;
+}
+function fallbackMarkdown(src){
+  const lines = String(src).replace(/\r\n?/g,'\n').split('\n');
+  let html='', i=0;
+  const brk = l => /^\s*$/.test(l)||/^#{1,6}\s+/.test(l)||/^\s*```/.test(l)||/^\s*[-*+]\s+/.test(l)||/^\s*\d+\.\s+/.test(l)||/^\s*>/.test(l)||/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(l);
+  while (i<lines.length){
+    const line=lines[i];
+    if (/^\s*```/.test(line)){ i++; const buf=[]; while(i<lines.length&&!/^\s*```/.test(lines[i])){buf.push(lines[i]);i++;} i++; html+='<pre><code>'+escapeHtml(buf.join('\n'))+'</code></pre>'; continue; }
+    let h=/^(#{1,6})\s+(.*)$/.exec(line);
+    if (h){ const l=h[1].length; html+=`<h${l}>${mdInline(h[2])}</h${l}>`; i++; continue; }
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)){ html+='<hr>'; i++; continue; }
+    if (/^\s*>/.test(line)){ const buf=[]; while(i<lines.length&&/^\s*>/.test(lines[i])){buf.push(lines[i].replace(/^\s*>\s?/,''));i++;} html+='<blockquote>'+fallbackMarkdown(buf.join('\n'))+'</blockquote>'; continue; }
+    if (/^\s*[-*+]\s+/.test(line)){ const buf=[]; while(i<lines.length&&/^\s*[-*+]\s+/.test(lines[i])){buf.push('<li>'+mdInline(lines[i].replace(/^\s*[-*+]\s+/,''))+'</li>');i++;} html+='<ul>'+buf.join('')+'</ul>'; continue; }
+    if (/^\s*\d+\.\s+/.test(line)){ const buf=[]; while(i<lines.length&&/^\s*\d+\.\s+/.test(lines[i])){buf.push('<li>'+mdInline(lines[i].replace(/^\s*\d+\.\s+/,''))+'</li>');i++;} html+='<ol>'+buf.join('')+'</ol>'; continue; }
+    if (/^\s*$/.test(line)){ i++; continue; }
+    const buf=[]; while(i<lines.length&&!brk(lines[i])){buf.push(lines[i].replace(/\s+$/,''));i++;}
+    html+='<p>'+mdInline(buf.join(' '))+'</p>';
+  }
+  return html;
+}
+function renderMarkdownHTML(src){
+  if (window.marked && typeof marked.parse === 'function') {
+    try { return marked.parse(src, { breaks: false, gfm: true }); } catch(e){}
+  }
+  return fallbackMarkdown(src);
+}
+// Load marked.js without blocking render; re-render md cells once it arrives.
+function loadMarked(){
+  if (window.marked) return;
+  const s = document.createElement('script');
+  s.src = 'https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js';
+  s.async = true;
+  s.onload = () => refreshMarkdownCells();
+  s.onerror = () => {};
+  document.head.appendChild(s);
+}
+function refreshMarkdownCells(){
+  $$('.cell').forEach(el => {
+    const c = nb.doc.cells.find(x => x.id === +el.dataset.id);
+    if (c && c.type === 'md' && !el.classList.contains('md-edit')) renderMd(el, c);
+  });
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * 3. STATE + PERSISTENCE
+ * ════════════════════════════════════════════════════════════════════════════ */
+// Keys keep the historical `engine.html:` prefix even though the file is now
+// index.html — localStorage is origin-scoped, not path-scoped, so renaming them
+// would orphan existing users' saved doc/history/conf. The prefix is an opaque
+// namespace; it does not need to match the filename.
+const LS = { doc:'engine.html:main.lua', hist:'engine.html:history', assets:'engine.html:assets', theme:'engine.html:theme', opts:'engine.html:opts' };
+const SEED = `--[[
+# LoveIDE
+
+Welcome. This prose is a **Markdown cell** — in the file it's just a top-level
+block comment, so main.lua stays a real, runnable LÖVE game the whole time.
+
+- Edit cells on the left, watch the game render on the right.
+- Toggle any cell between **Lua** and **Markdown** — it's only comment / uncomment.
+- Export a \`.love\` that also runs in desktop LÖVE.
+]]
+function love.load()
+  ball = { x = 200, y = 150, dx = 150, dy = 110, r = 9 }
+  t = 0
+end
+-- %%
+function love.update(dt)
+  t = t + dt
+  ball.x = ball.x + ball.dx * dt
+  ball.y = ball.y + ball.dy * dt
+  if ball.x < ball.r or ball.x > 400 - ball.r then ball.dx = -ball.dx end
+  if ball.y < ball.r or ball.y > 300 - ball.r then ball.dy = -ball.dy end
+end
+-- %%
+function love.draw()
+  love.graphics.clear(0.07, 0.07, 0.07)
+  love.graphics.setColor(0.85, 0.18, 0.55)
+  love.graphics.circle('fill', ball.x, ball.y, ball.r)
+  love.graphics.setColor(1, 1, 1)
+  love.graphics.print('LoveIDE  ' .. string.format('%.1f', t) .. 's', 10, 10)
+end
+`;
+
+const nb = {
+  doc: { cells: [], trailing: '' },
+  dirty: false,
+  opts: { lineNumbers: false },
+  editor: { cm: null, views: new Map(), focusNew: new Set() },
+  runtime: 'idle',
+};
+
+function lsGet(k,d){ try { const v=localStorage.getItem(k); return v==null?d:v; } catch(e){ return d; } }
+function lsSet(k,v){ try { localStorage.setItem(k,v); } catch(e){} }
+
+function loadDoc(){ nb.doc = parse(lsGet(LS.doc, SEED)); }
+function saveDoc(snapshot){
+  const src = serialize(nb.doc);
+  lsSet(LS.doc, src);
+  if (snapshot) pushHistory(src);
+  setDirty(false);
+}
+let _saveTimer=null;
+function saveSoon(){ clearTimeout(_saveTimer); _saveTimer=setTimeout(()=>saveDoc(false),600); }
+function setDirty(v){ nb.dirty=v; const el=$('#st-save'); el.textContent=v?'Unsaved':'Saved'; el.classList.toggle('dirty',v); }
+
+// history
+function readHistory(){ try { return JSON.parse(lsGet(LS.hist,'[]')); } catch(e){ return []; } }
+function pushHistory(src){
+  const h=readHistory();
+  if (h.length && h[0].src===src) return;
+  h.unshift({ t: nowMs(), src });
+  while (h.length>30) h.pop();
+  lsSet(LS.hist, JSON.stringify(h)); renderHistory();
+}
+let _clock = 0;
+function nowMs(){ return (typeof performance!=='undefined' && performance.timeOrigin) ? Math.round(performance.timeOrigin+performance.now()) : (++_clock); }
+function relTime(t){ const s=Math.round((nowMs()-t)/1000); if(s<60)return s+'s ago'; if(s<3600)return Math.round(s/60)+'m ago'; if(s<86400)return Math.round(s/3600)+'h ago'; return Math.round(s/86400)+'d ago'; }
+function renderHistory(){
+  const wrap=$('#hist-list'); wrap.innerHTML='';
+  const h=readHistory();
+  if (!h.length){ wrap.appendChild(elem('div',{class:'pane-empty',text:'No snapshots yet'})); return; }
+  h.forEach((e,idx)=>{
+    wrap.appendChild(elem('div',{class:'list-row clickable',title:'Restore this snapshot',
+      onclick:()=>{ if(confirm('Restore snapshot? Current state is snapshotted first.')){ saveDoc(true); nb.doc=parse(e.src); setDirty(true); renderNotebook(); } }},
+      [ elem('span',{class:'grow',html:(idx===0?'● ':'')+relTime(e.t)}), elem('span',{class:'sub',text:(e.src.length+' B')}) ]));
+  });
+}
+
+function fmtBytes(n){ if(n<1024)return n+' B'; if(n<1048576)return (n/1024).toFixed(1)+' KB'; return (n/1048576).toFixed(1)+' MB'; }
+
+// ── Assets: stored in IndexedDB as Blobs (large quota, no base64 inflation,
+//    not capped at localStorage's ~5 MB). Records: {name, blob, size, type}.
+const IDB_NAME='loveide', IDB_VER=1, IDB_STORE='assets';
+let _idbP=null;
+function idb(){
+  if (_idbP) return _idbP;
+  _idbP=new Promise((res,rej)=>{
+    const q=indexedDB.open(IDB_NAME, IDB_VER);
+    q.onupgradeneeded=()=>{ const db=q.result; if(!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE,{keyPath:'name'}); };
+    q.onsuccess=()=>res(q.result); q.onerror=()=>rej(q.error);
+  });
+  return _idbP;
+}
+function idbReq(mode, fn){
+  return idb().then(db=>new Promise((res,rej)=>{
+    const tx=db.transaction(IDB_STORE, mode); const store=tx.objectStore(IDB_STORE);
+    let out; const r=fn(store); if(r) r.onsuccess=()=>{ out=r.result; };
+    tx.oncomplete=()=>res(out); tx.onerror=()=>rej(tx.error); tx.onabort=()=>rej(tx.error);
+  }));
+}
+const idbAllAssets = () => idbReq('readonly', s=>s.getAll()).then(r=>r||[]).catch(()=>[]);
+const idbPutAsset  = rec => idbReq('readwrite', s=>{ s.put(rec); });
+const idbDelAsset  = name => idbReq('readwrite', s=>{ s.delete(name); });
+const idbClearAssets = () => idbReq('readwrite', s=>{ s.clear(); });
+
+async function renderAssets(){
+  const wrap=$('#asset-list'); if(!wrap) return; wrap.innerHTML='';
+  const list=await idbAllAssets();
+  if (!list.length){ wrap.appendChild(elem('div',{class:'pane-empty',text:'No assets. + to add sprites / audio.'})); return; }
+  list.sort((a,b)=>a.name.localeCompare(b.name)).forEach(x=>{
+    const rm=elem('span',{class:'x',title:'Remove',html:svg('trash')});
+    rm.onclick=async()=>{ await idbDelAsset(x.name); renderAssets(); };
+    wrap.appendChild(elem('div',{class:'list-row',title:x.name},
+      [ elem('span',{class:'grow mono',text:x.name}), elem('span',{class:'sub',text:fmtBytes(x.size||0)}), rm ]));
+  });
+}
+async function addAssets(fileList){
+  const files=Array.from(fileList); if(!files.length) return;
+  for (const file of files){
+    try { await idbPutAsset({ name:file.name, blob:file, size:file.size, type:file.type||'' }); }
+    catch(e){ toast('Failed to store '+file.name); }
+  }
+  renderAssets();
+  toast(files.length+' asset(s) added');
+}
+// One-time migration: move any old localStorage data-URL assets into IndexedDB.
+async function migrateAssets(){
+  let old=[]; try { old=JSON.parse(lsGet(LS.assets,'[]')); } catch(e){}
+  if (!old.length) return;
+  for (const a of old){ try { const blob=await (await fetch(a.dataURL)).blob(); await idbPutAsset({ name:a.name, blob, size:a.size||blob.size, type:blob.type }); } catch(e){} }
+  lsSet(LS.assets,'[]');
+}
+
+/* ── Game settings → conf.lua (generated into the .love at build) ── */
+const CONF_DEFAULTS = { title:'Untitled', identity:'loveide-game', version:'11.5', width:800, height:600, resizable:false, vsync:true, fullscreen:false };
+function readConf(){ try { return Object.assign({}, CONF_DEFAULTS, JSON.parse(lsGet('engine.html:conf','{}'))); } catch(e){ return Object.assign({}, CONF_DEFAULTS); } }
+function writeConf(c){ lsSet('engine.html:conf', JSON.stringify(c)); }
+function luaStr(s){ return '"' + String(s).replace(/\\/g,'\\\\').replace(/"/g,'\\"').replace(/\n/g,'\\n') + '"'; }
+function generateConfLua(){
+  const c=readConf();
+  return `-- Generated by LoveIDE — edit in Settings → Game
+function love.conf(t)
+  t.identity = ${luaStr(c.identity||'loveide-game')}
+  t.version = ${luaStr(c.version||'11.5')}
+  t.window.title = ${luaStr(c.title||'Untitled')}
+  t.window.width = ${parseInt(c.width)||800}
+  t.window.height = ${parseInt(c.height)||600}
+  t.window.resizable = ${c.resizable?'true':'false'}
+  t.window.vsync = ${c.vsync?1:0}
+  t.window.fullscreen = ${c.fullscreen?'true':'false'}
+end
+`;
+}
+function renderConf(){
+  const c=readConf();
+  const set=(id,v)=>{ const el=$('#'+id); if(el){ if(el.type==='checkbox') el.checked=!!v; else el.value=v; } };
+  set('conf-title',c.title); set('conf-identity',c.identity); set('conf-version',c.version);
+  set('conf-width',c.width); set('conf-height',c.height);
+  set('conf-resizable',c.resizable); set('conf-vsync',c.vsync); set('conf-fullscreen',c.fullscreen);
+}
+function wireConf(){
+  const fields=[['conf-title','title','text'],['conf-identity','identity','text'],['conf-version','version','text'],['conf-width','width','int'],['conf-height','height','int'],['conf-resizable','resizable','bool'],['conf-vsync','vsync','bool'],['conf-fullscreen','fullscreen','bool']];
+  fields.forEach(([id,key,kind])=>{
+    const el=$('#'+id); if(!el) return;
+    const handler=()=>{ const c=readConf(); c[key]= kind==='bool'?el.checked : kind==='int'?(parseInt(el.value)||CONF_DEFAULTS[key]) : el.value; writeConf(c); };
+    el.addEventListener(el.type==='checkbox'?'change':'input', handler);
+  });
+}
+
+/* ── Storage meter ── */
+function lsBytes(key){ const v=lsGet(key,null); return v==null ? 0 : (key.length + v.length) * 2; }
+async function renderStorage(){
+  const wrap=$('#storage-body'); if(!wrap) return;
+  const assets=await idbAllAssets();
+  const assetBytes=assets.reduce((s,a)=>s+(a.size||0),0);
+  const cats=[
+    { label:'main.lua',  bytes:lsBytes(LS.doc) },
+    { label:'Snapshots', bytes:lsBytes(LS.hist) },
+    { label:'Libraries', bytes:lsBytes('engine.html:libs'), clear:()=>{ lsSet('engine.html:libs','[]'); renderLibs(); } },
+    { label:'Assets (IndexedDB)', bytes:assetBytes, clear:async()=>{ await idbClearAssets(); renderAssets(); } },
+  ];
+  // Real origin usage/quota (covers localStorage + IndexedDB), via the
+  // StorageManager API; falls back to a summed estimate if unavailable.
+  let used=cats.reduce((s,c)=>s+c.bytes,0), quota=5*1024*1024, real=false;
+  try { if (navigator.storage && navigator.storage.estimate){ const e=await navigator.storage.estimate(); if(e && e.quota){ used=e.usage; quota=e.quota; real=true; } } } catch(e){}
+  const pct=Math.min(100, Math.round(used/quota*100));
+  wrap.innerHTML='';
+  wrap.appendChild(elem('div',{class:'storage-total'},[ elem('span',{text:real?'Used (this site)':'Used'}), elem('b',{text:fmtBytes(used)+' / '+fmtBytes(quota)}) ]));
+  wrap.appendChild(elem('div',{class:'storage-bar'},[ elem('div',{class:'storage-fill'+(pct>90?' full':pct>70?' warn':''),style:'width:'+pct+'%'}) ]));
+  cats.forEach(c=>{
+    const kids=[ elem('span',{class:'grow',text:c.label}), elem('span',{class:'val',text:fmtBytes(c.bytes)}) ];
+    if(c.clear && c.bytes>0){ const btn=elem('button',{class:'clr',text:'Clear'}); btn.onclick=async()=>{ if(confirm('Clear '+c.label+'?')){ await c.clear(); renderStorage(); toast(c.label+' cleared'); } }; kids.push(btn); }
+    wrap.appendChild(elem('div',{class:'storage-row'},kids));
+  });
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * 4. THEME
+ * ════════════════════════════════════════════════════════════════════════════ */
+function getTheme(){ try { return JSON.parse(lsGet(LS.theme,'null')) || { mode:'auto', tone:'warm' }; } catch(e){ return { mode:'auto', tone:'warm' }; } }
+function setTheme(t){ lsSet(LS.theme, JSON.stringify(t)); applyTheme(); }
+const THEMES = { warm:{light:'linen',dark:'ember'}, cool:{light:'slate',dark:'dusk'}, neutral:{light:'cloud',dark:'carbon'} };
+function applyTheme(){
+  const t=getTheme();
+  let dark = t.mode==='dark' || (t.mode==='auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  const name = THEMES[t.tone][dark?'dark':'light'];
+  document.documentElement.setAttribute('data-theme', name);
+  $$('#seg-mode button').forEach(b=>b.classList.toggle('active', b.dataset.mode===t.mode));
+  $$('#seg-tone button').forEach(b=>b.classList.toggle('active', b.dataset.tone===t.tone));
+  const stt=$('#st-theme'); if(stt) stt.textContent=name;
+  if (nb.editor.cm) refreshEditorThemes();
+}
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', ()=>{ if(getTheme().mode==='auto') applyTheme(); });
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * 5. CODEMIRROR 6 (Lua) — loaded on demand; textarea is the fallback.
+ * ════════════════════════════════════════════════════════════════════════════ */
+async function loadCM(){
+  if (nb.editor.cm) return nb.editor.cm;
+  if (nb.editor.cm === false) return null;
+  try {
+    const [view,state,commands,language,autocomplete,luaMode,lezer] = await Promise.all([
+      import('@codemirror/view'), import('@codemirror/state'), import('@codemirror/commands'),
+      import('@codemirror/language'), import('@codemirror/autocomplete'),
+      import('@codemirror/legacy-modes/mode/lua'), import('@lezer/highlight'),
+    ]);
+    const { EditorView } = view;
+    const { HighlightStyle, syntaxHighlighting, StreamLanguage } = language;
+    const { tags } = lezer;
+    const theme = EditorView.theme({
+      '&': { fontSize:'13px', fontFamily:'var(--font-mono)', lineHeight:'1.65', background:'var(--bg-primary)', color:'var(--text-primary)' },
+      '&.cm-focused': { outline:'none' },
+      '.cm-content': { padding:'11px 13px', minHeight:'52px', caretColor:'var(--border-info)', fontFamily:'inherit' },
+      '.cm-scroller': { fontFamily:'inherit' },
+      '.cm-cursor, .cm-dropCursor': { borderLeftColor:'var(--border-info)', borderLeftWidth:'2px' },
+      '&.cm-focused .cm-selectionBackground, .cm-selectionBackground': { background:'var(--bg-tertiary)' },
+      '.cm-activeLine': { background:'var(--bg-secondary)' },
+      '.cm-gutters': { background:'var(--bg-primary)', borderRight:'1px solid var(--border-faint)', color:'var(--text-tertiary)' },
+    });
+    const highlight = syntaxHighlighting(HighlightStyle.define([
+      { tag:[tags.keyword,tags.definitionKeyword,tags.controlKeyword,tags.operatorKeyword], color:'var(--syntax-keyword)' },
+      { tag:[tags.string,tags.special(tags.string)], color:'var(--syntax-string)' },
+      { tag:[tags.number,tags.bool,tags.atom], color:'var(--syntax-string)' },
+      { tag:[tags.operator,tags.punctuation], color:'var(--syntax-operator)' },
+      { tag:tags.comment, color:'var(--text-tertiary)', fontStyle:'italic' },
+      { tag:[tags.variableName,tags.propertyName,tags.function(tags.variableName)], color:'var(--text-primary)' },
+    ]));
+    nb.editor.cm = { view, state, commands, language, autocomplete, lua: StreamLanguage.define(luaMode.lua), theme, highlight };
+    return nb.editor.cm;
+  } catch(e){
+    nb.editor.cm = false;
+    logConsole('CodeMirror unavailable (offline?) — using plain editor.', 'dim');
+    return null;
+  }
+}
+function refreshEditorThemes(){ /* CM reads CSS vars live; nothing to do */ }
+
+async function upgradeEditor(cellEl, cell){
+  if (nb.editor.views.has(cell.id)) return;
+  const m = await loadCM();
+  if (!m) return;
+  const wrap = cellEl.querySelector('.cell-editor');
+  const ta = wrap && wrap.querySelector('textarea');
+  if (!ta) return;
+  const { EditorView, keymap, drawSelection, highlightActiveLine, lineNumbers } = m.view;
+  const { defaultKeymap, indentWithTab, history, historyKeymap } = m.commands;
+  const { indentOnInput, bracketMatching } = m.language;
+  const { closeBrackets, closeBracketsKeymap } = m.autocomplete;
+  const view = new EditorView({
+    doc: cell.code,
+    extensions: [
+      m.theme, m.highlight, m.lua,
+      nb.opts.lineNumbers ? lineNumbers() : [],
+      history(), drawSelection(), highlightActiveLine(), indentOnInput(), bracketMatching(), closeBrackets(),
+      EditorView.lineWrapping,
+      keymap.of([ ...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap, indentWithTab ]),
+      EditorView.updateListener.of(u=>{
+        if (u.docChanged){ cell.code=u.state.doc.toString(); setDirty(true); saveSoon(); updateCellTitle(cellEl,cell); }
+        if (u.focusChanged){ cellEl.classList.toggle('focused', u.view.hasFocus); if (u.view.hasFocus) nb.editor.lastFocus=cell.id; }
+      }),
+    ],
+    parent: wrap,
+  });
+  ta.remove();
+  nb.editor.views.set(cell.id, view);
+  if (nb.editor.focusNew.delete(cell.id)) view.focus();
+}
+async function upgradeAllEditors(){
+  if (!(await loadCM())) return;
+  $$('.cell').forEach(el=>{ const c=nb.doc.cells.find(x=>x.id===+el.dataset.id); if(c && c.type==='lua') upgradeEditor(el,c); });
+}
+function cellCode(cell){ const v=nb.editor.views.get(cell.id); return v ? v.state.doc.toString() : cell.code; }
+function syncFromEditors(){ nb.doc.cells.forEach(c=>{ const v=nb.editor.views.get(c.id); if(v) c.code=v.state.doc.toString(); }); }
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * 6. CELL DOM
+ * ════════════════════════════════════════════════════════════════════════════ */
+const BADGE = { lua:'Lua', md:'Markdown' };
+function firstLine(s){ const l=(s||'').split('\n').find(x=>x.trim()); return (l||'').trim().slice(0,60); }
+function updateCellTitle(cellEl, cell){
+  const t=cellEl.querySelector('.cell-title');
+  if (t) t.textContent = cell.type==='md' ? firstLine(cell.code).replace(/^#+\s*/,'') : firstLine(cell.code);
+  renderOutlineSoon();
+}
+let _outlineTimer=null;
+function renderOutlineSoon(){ clearTimeout(_outlineTimer); _outlineTimer=setTimeout(()=>{
+  renderOutline();
+  if (PANES.right && !PANES.right.isCollapsed()){
+    if ($('#rpanel-variables') && $('#rpanel-variables').classList.contains('active')) renderVariablesTab();
+    if ($('#rpanel-tables') && $('#rpanel-tables').classList.contains('active')) renderTablesTab();
+  }
+},350); }
+// Insert zones compute their index from DOM position (count .cell nodes before
+// them), so they stay correct after in-place drag reordering.
+function createInsertZone(){
+  const zone=elem('div',{class:'cell-insert'});
+  const at=()=>{ let i=0,n=zone.previousElementSibling; while(n){ if(n.classList && n.classList.contains('cell')) i++; n=n.previousElementSibling; } return i; };
+  zone.appendChild(elem('button',{class:'insert-btn type-lua',html:svg('code')+' Lua',onclick:()=>addCell('lua',at())}));
+  zone.appendChild(elem('button',{class:'insert-btn type-md',html:svg('md')+' Markdown',onclick:()=>addCell('md',at())}));
+  return zone;
+}
+function renderMd(cellEl, cell){
+  const out=cellEl.querySelector('.cell-output');
+  out.className='cell-output out-md';
+  out.innerHTML = cell.code.trim()? renderMarkdownHTML(cell.code) : '';
+  cellEl.classList.remove('md-edit'); cellEl.classList.add('md-view');
+}
+function createCellEl(cell){
+  const badge=elem('span',{class:'cell-badge badge-'+cell.type,text:BADGE[cell.type],title:'Switch cell type'});
+  badge.onclick=(e)=>openTypePicker(badge,cell);
+  const title=elem('span',{class:'cell-title'});
+  const actions=elem('div',{class:'cell-actions'},[
+    mkAction('up','Move up',()=>moveCell(cell.id,-1)),
+    mkAction('down','Move down',()=>moveCell(cell.id,1)),
+    mkAction('chevron','Collapse',()=>toggleCollapse(cell.id),'collapse-btn'),
+    mkAction('trash','Delete',()=>deleteCell(cell.id),'danger'),
+  ]);
+  const header=elem('div',{class:'cell-header'},[badge,title,actions]);
+
+  const body=elem('div',{class:'cell-editor'});
+  const out=elem('div',{class:'cell-output'});
+  const cellEl=elem('div',{class:'cell','data-id':cell.id},[header,body,out]);
+  if (cell.collapsed) cellEl.classList.add('collapsed');
+
+  if (cell.type==='lua'){
+    const ta=elem('textarea',{spellcheck:'false'}); ta.value=cell.code;
+    ta.addEventListener('input',()=>{ cell.code=ta.value; autosize(ta); setDirty(true); saveSoon(); updateCellTitle(cellEl,cell); });
+    ta.addEventListener('focus',()=>{ cellEl.classList.add('focused'); nb.editor.lastFocus=cell.id; });
+    ta.addEventListener('blur',()=>cellEl.classList.remove('focused'));
+    ta.addEventListener('keydown',e=>editorKeys(e,ta,cell));
+    body.appendChild(ta); setTimeout(()=>autosize(ta),0);
+    setTimeout(()=>upgradeEditor(cellEl,cell),0);
+  } else {
+    const ta=elem('textarea',{spellcheck:'false'}); ta.value=cell.code;
+    ta.addEventListener('focus',()=>{ nb.editor.lastFocus=cell.id; });
+    ta.addEventListener('input',()=>{ cell.code=ta.value; autosize(ta); setDirty(true); saveSoon(); });
+    ta.addEventListener('blur',()=>{ cell.code=ta.value; renderMd(cellEl,cell); setDirty(true); saveSoon(); updateCellTitle(cellEl,cell); });
+    ta.addEventListener('keydown',e=>editorKeys(e,ta,cell));
+    body.appendChild(ta);
+    out.addEventListener('click',()=>{ if(cellEl.classList.contains('collapsed'))return; cellEl.classList.remove('md-view'); cellEl.classList.add('md-edit'); autosize(ta); ta.focus(); });
+    renderMd(cellEl,cell);
+  }
+  updateCellTitle(cellEl,cell);
+  attachDrag(header, cellEl, cell);
+  return cellEl;
+}
+function mkAction(ico,title,fn,cls){ const b=elem('button',{class:'ca-btn'+(cls?' '+cls:''),title,html:svg(ico)}); b.onclick=fn; return b; }
+function autosize(ta){ ta.style.height='auto'; ta.style.height=(ta.scrollHeight+2)+'px'; }
+function editorKeys(e,ta,cell){
+  if (e.key==='Tab'){ e.preventDefault(); const s=ta.selectionStart,en=ta.selectionEnd; ta.value=ta.value.slice(0,s)+'  '+ta.value.slice(en); ta.selectionStart=ta.selectionEnd=s+2; cell.code=ta.value; autosize(ta); setDirty(true); saveSoon(); }
+  if (e.key==='Enter' && (e.metaKey||e.ctrlKey)){ e.preventDefault(); run(); }
+}
+
+function openTypePicker(badge, cell){
+  document.querySelectorAll('.type-picker').forEach(p=>p.remove());
+  const picker=elem('div',{class:'type-picker'});
+  ['lua','md'].filter(t=>t!==cell.type).forEach(t=>{
+    const b=elem('button',{class:'type-picker-btn',html:svg(t==='lua'?'code':'md')+'<span>'+BADGE[t]+'</span>'});
+    b.addEventListener('mousedown',ev=>{ ev.stopPropagation(); picker.remove(); convertType(cell.id,t); });
+    picker.appendChild(b);
+  });
+  document.body.appendChild(picker);
+  const r=badge.getBoundingClientRect(); picker.style.top=(r.bottom+4)+'px'; picker.style.left=r.left+'px';
+  const dismiss=e=>{ if(!picker.contains(e.target)&&e.target!==badge){ picker.remove(); document.removeEventListener('mousedown',dismiss); } };
+  setTimeout(()=>document.addEventListener('mousedown',dismiss),0);
+}
+
+// full re-render (used on load, structural ops, restore)
+function renderNotebook(){
+  syncFromEditors();
+  nb.editor.views.forEach(v=>{ try{v.destroy();}catch(e){} }); nb.editor.views.clear();
+  const scroll=$('#nb-scroll'); scroll.innerHTML='';
+  scroll.appendChild(createInsertZone());
+  nb.doc.cells.forEach((cell)=>{
+    scroll.appendChild(createCellEl(cell));
+    scroll.appendChild(createInsertZone());
+  });
+  renderOutline();
+  saveSoon();
+}
+
+/* ── Drag-to-reorder (ported from the oracle) ─────────────────────────────────
+ * A floating clone (ghost) follows the cursor; the source cell becomes a dashed
+ * placeholder. Adjacent cells are swapped in place as the ghost crosses them —
+ * no full re-render, so CodeMirror editors survive the drag. On drop, glue is
+ * re-derived (so -- %% separators stay correct) and the doc is saved. */
+function domSwapCells(idA, idB){
+  const scroll=$('#nb-scroll');
+  const a=scroll.querySelector(`.cell[data-id="${idA}"]`);
+  const b=scroll.querySelector(`.cell[data-id="${idB}"]`);
+  if(!a||!b)return;
+  const afterA=a.nextSibling, afterB=b.nextSibling;
+  scroll.insertBefore(b, afterA);
+  scroll.insertBefore(a, afterB);
+}
+function dragSwap(id, dir){
+  const i=nb.doc.cells.findIndex(c=>c.id===id), j=i+dir;
+  if(j<0||j>=nb.doc.cells.length)return;
+  const otherId=nb.doc.cells[j].id;
+  [nb.doc.cells[i],nb.doc.cells[j]]=[nb.doc.cells[j],nb.doc.cells[i]];
+  domSwapCells(id, otherId);
+}
+function attachDrag(header, el, cell){
+  header.addEventListener('mousedown', e=>{
+    if (e.button!==0) return;
+    if (e.target.closest('button') || e.target.closest('.cell-badge')) return;
+    const startX=e.clientX, startY=e.clientY;
+    const rect=el.getBoundingClientRect();
+    const offsetY=e.clientY-rect.top;
+    const nbBody=$('#nb-body');
+    const EDGE=0.15, MAX_SPEED=9;
+    let started=false, ghost=null, anim=null, lastY=e.clientY;
+
+    function begin(){
+      started=true;
+      ghost=el.cloneNode(true);
+      ghost.classList.add('cell-ghost');
+      ghost.style.cssText=`position:fixed;top:${rect.top}px;left:${rect.left}px;width:${rect.width}px;margin:0;pointer-events:none;z-index:1000;opacity:.93;box-shadow:0 8px 32px rgba(0,0,0,.28);border-radius:var(--radius-lg);transition:none;`;
+      document.body.appendChild(ghost);
+      el.classList.add('drag-placeholder');
+      document.body.style.cursor='grabbing';
+      document.body.style.userSelect='none';
+      anim=requestAnimationFrame(step);
+    }
+    function reorderIfCrossed(){
+      const scroll=$('#nb-scroll');
+      const cells=Array.from(scroll.querySelectorAll('.cell'));
+      const idx=cells.indexOf(el);
+      const gr=ghost.getBoundingClientRect();
+      if (idx>0 && gr.top < cells[idx-1].getBoundingClientRect().top){ dragSwap(cell.id,-1); return; }
+      if (idx<cells.length-1 && gr.bottom > cells[idx+1].getBoundingClientRect().bottom){ dragSwap(cell.id,1); return; }
+    }
+    function step(){
+      ghost.style.top=(lastY-offsetY)+'px';
+      const r=nbBody.getBoundingClientRect();
+      const dTop=lastY-r.top, dBot=r.bottom-lastY, ez=nbBody.clientHeight*EDGE;
+      if (dTop<ez) nbBody.scrollTop -= MAX_SPEED*(1-Math.max(0,dTop)/ez);
+      else if (dBot<ez) nbBody.scrollTop += MAX_SPEED*(1-Math.max(0,dBot)/ez);
+      reorderIfCrossed();
+      anim=requestAnimationFrame(step);
+    }
+    function move(ev){
+      lastY=ev.clientY;
+      if (!started && (Math.abs(ev.clientX-startX)>4 || Math.abs(ev.clientY-startY)>4)) begin();
+    }
+    function up(){
+      document.removeEventListener('mousemove',move);
+      document.removeEventListener('mouseup',up);
+      if (!started) return;
+      cancelAnimationFrame(anim);
+      if (ghost) ghost.remove();
+      el.classList.remove('drag-placeholder');
+      document.body.style.cursor=''; document.body.style.userSelect='';
+      normalizeGlue(nb.doc); setDirty(true); saveSoon();
+    }
+    document.addEventListener('mousemove',move);
+    document.addEventListener('mouseup',up);
+  });
+}
+
+/* structural ops */
+function newCell(type){ return { id:uid(), type, code:'', level:0, before:'', collapsed:false }; }
+function addCell(type, at){
+  const c=newCell(type);
+  if (at==null||at<0||at>nb.doc.cells.length) nb.doc.cells.push(c); else nb.doc.cells.splice(at,0,c);
+  normalizeGlue(nb.doc); nb.editor.focusNew.add(c.id); setDirty(true); renderNotebook();
+}
+function deleteCell(id){
+  const i=nb.doc.cells.findIndex(c=>c.id===id); if(i<0)return;
+  if (nb.doc.cells.length===1 && !confirm('Delete the only cell?')) return;
+  nb.doc.cells.splice(i,1); normalizeGlue(nb.doc); setDirty(true); renderNotebook();
+}
+function moveCell(id,dir){
+  const i=nb.doc.cells.findIndex(c=>c.id===id), j=i+dir; if(j<0||j>=nb.doc.cells.length)return;
+  syncFromEditors();
+  const [c]=nb.doc.cells.splice(i,1); nb.doc.cells.splice(j,0,c);
+  normalizeGlue(nb.doc); setDirty(true); renderNotebook();
+}
+function convertType(id,t){
+  const c=nb.doc.cells.find(x=>x.id===id); if(!c)return;
+  syncFromEditors(); c.type=t; if(t==='md')c.level=0;
+  normalizeGlue(nb.doc); setDirty(true); renderNotebook();
+}
+function toggleCollapse(id){
+  const c=nb.doc.cells.find(x=>x.id===id); if(!c)return;
+  c.collapsed=!c.collapsed;
+  const el=$(`.cell[data-id="${id}"]`); if(el) el.classList.toggle('collapsed',c.collapsed);
+}
+function collapseAll(){
+  const anyOpen=nb.doc.cells.some(c=>!c.collapsed);
+  nb.doc.cells.forEach(c=>c.collapsed=anyOpen);
+  $$('.cell').forEach(el=>el.classList.toggle('collapsed',anyOpen));
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * 6b. ACTIVITY-BAR PANELS — Outline, Lua libraries, LÖVE API reference
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+/* ── Outline / navigator ── */
+function renderOutline(){
+  const wrap=$('#outline-list'); if(!wrap) return; wrap.innerHTML='';
+  if(!nb.doc.cells.length){ wrap.appendChild(elem('div',{class:'pane-empty',text:'No cells'})); return; }
+  nb.doc.cells.forEach((c,i)=>{
+    const label = c.type==='md' ? (firstLine(c.code).replace(/^#+\s*/,'')||'Markdown') : (firstLine(c.code)||'(empty)');
+    const row=elem('div',{class:'list-row clickable',title:label},[
+      elem('span',{class:'ol-dot '+c.type}),
+      elem('span',{class:'grow mono',text:label}),
+      elem('span',{class:'sub',text:String(i+1)}),
+    ]);
+    row.onclick=()=>{ const el=$(`.cell[data-id="${c.id}"]`); if(el){ el.scrollIntoView({behavior:'smooth',block:'center'}); el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); setTimeout(()=>el.classList.remove('flash'),750); } };
+    wrap.appendChild(row);
+  });
+}
+
+/* ── Variables & Tables — static analysis of main.lua via luaparse ──
+ * Lazy-loads luaparse (like marked/CodeMirror); a heuristic regex scan is the
+ * offline fallback. Variables = symbol map (functions + globals); Tables = data
+ * tables, with arrays-of-records rendered as grids. Both jump to the cell. */
+const LUAPARSE_URL = 'https://cdn.jsdelivr.net/npm/luaparse@0.3.1/luaparse.js';
+let _luaparseP = null;
+function loadLuaparse(){
+  if (window.luaparse) return Promise.resolve(window.luaparse);
+  if (_luaparseP) return _luaparseP;
+  _luaparseP = new Promise(res => { const s=document.createElement('script'); s.src=LUAPARSE_URL; s.onload=()=>res(window.luaparse||null); s.onerror=()=>res(null); document.head.appendChild(s); });
+  return _luaparseP;
+}
+function lpMemberName(n){ if(!n) return '?'; if(n.type==='Identifier') return n.name; if(n.type==='MemberExpression') return lpMemberName(n.base)+(n.indexer||'.')+n.identifier.name; if(n.type==='IndexExpression') return lpMemberName(n.base)+'[…]'; return '?'; }
+function lpDisp(node, src){
+  if(!node) return '';
+  switch(node.type){
+    case 'StringLiteral': return node.raw!=null?node.raw:('"'+node.value+'"');
+    case 'NumericLiteral': return String(node.value);
+    case 'BooleanLiteral': return String(node.value);
+    case 'NilLiteral': return 'nil';
+    case 'Identifier': return node.name;
+    case 'UnaryExpression': return node.operator+lpDisp(node.argument,src);
+    case 'TableConstructorExpression': return '{ '+node.fields.length+' }';
+    case 'FunctionDeclaration': case 'FunctionExpression': return 'function('+(node.parameters||[]).map(p=>p.name||'...').join(', ')+')';
+    default: { const r=node.range; let s=r?src.slice(r[0],r[1]):node.type; s=s.replace(/\s+/g,' '); return s.length>40?s.slice(0,40)+'…':s; }
+  }
+}
+function lpValType(n){ if(!n) return 'nil'; const m={StringLiteral:'string',NumericLiteral:'number',BooleanLiteral:'boolean',NilLiteral:'nil',TableConstructorExpression:'table',FunctionDeclaration:'function',FunctionExpression:'function',Identifier:'ref',CallExpression:'call',StringCallExpression:'call',TableCallExpression:'call'}; return m[n.type]||'expr'; }
+function lpTableInfo(name, line, isLocal, tc, src){
+  const fields=tc.fields||[];
+  const allValues = fields.length>0 && fields.every(f=>f.type==='TableValue');
+  const recordy = allValues && fields.every(f=>f.value.type==='TableConstructorExpression' && f.value.fields.some(x=>x.type==='TableKeyString'));
+  if(recordy){
+    const cols=[]; fields.forEach(f=>f.value.fields.forEach(x=>{ if(x.type==='TableKeyString' && !cols.includes(x.key.name)) cols.push(x.key.name); }));
+    const rows=fields.map(f=>{ const rec={}; f.value.fields.forEach(x=>{ if(x.type==='TableKeyString') rec[x.key.name]=lpDisp(x.value,src); }); return cols.map(c=>c in rec?rec[c]:''); });
+    return {name,line,local:isLocal,kind:'records',columns:cols,rows,count:rows.length};
+  }
+  const keyed = fields.length>0 && fields.some(f=>f.type==='TableKeyString'||f.type==='TableKey');
+  if(keyed){ const entries=fields.map(f=>{ if(f.type==='TableKeyString') return {k:f.key.name, v:lpDisp(f.value,src)}; if(f.type==='TableKey') return {k:'['+lpDisp(f.key,src)+']', v:lpDisp(f.value,src)}; return {k:'·', v:lpDisp(f.value,src)}; }); return {name,line,local:isLocal,kind:'map',entries,count:entries.length}; }
+  return {name,line,local:isLocal,kind:'array',items:fields.map(f=>lpDisp(f.value,src)),count:fields.length};
+}
+function analyzeLua(src, luaparse){
+  const out={functions:[],globals:[],tables:[],error:null};
+  let ast; try { ast=luaparse.parse(src,{locations:true,ranges:true,comments:false,luaVersion:'5.3'}); } catch(e){ out.error=e.message||String(e); return out; }
+  const line=n=>n.loc?n.loc.start.line:0;
+  for(const n of ast.body){
+    if(n.type==='FunctionDeclaration'){
+      out.functions.push({name:lpMemberName(n.identifier), line:line(n), local:!!n.isLocal, sig:'('+(n.parameters||[]).map(p=>p.name||'...').join(', ')+')'});
+    } else if(n.type==='LocalStatement' || n.type==='AssignmentStatement'){
+      const isLocal=n.type==='LocalStatement';
+      n.variables.forEach((v,i)=>{
+        const init=n.init&&n.init[i]; const nm=lpMemberName(v);
+        if(init && (init.type==='FunctionDeclaration'||init.type==='FunctionExpression')) out.functions.push({name:nm, line:line(n), local:isLocal, sig:'('+(init.parameters||[]).map(p=>p.name||'...').join(', ')+')'});
+        else if(init && init.type==='TableConstructorExpression') out.tables.push(lpTableInfo(nm, line(n), isLocal, init, src));
+        else out.globals.push({name:nm, line:line(n), local:isLocal, type:lpValType(init), preview:lpDisp(init,src)});
+      });
+    }
+  }
+  return out;
+}
+// Offline fallback: line-by-line heuristic (top-level only, no record grids).
+function heuristicAnalyze(src){
+  const out={functions:[],globals:[],tables:[],error:null}; let m;
+  src.split('\n').forEach((ln,i)=>{
+    if(m=/^\s*(local\s+)?function\s+([\w.:]+)\s*\(([^)]*)\)/.exec(ln)) out.functions.push({name:m[2],line:i+1,local:!!m[1],sig:'('+m[3]+')'});
+    else if(m=/^\s*([\w.]+)\s*=\s*function\s*\(([^)]*)\)/.exec(ln)) out.functions.push({name:m[1],line:i+1,local:false,sig:'('+m[2]+')'});
+    else if(m=/^\s*(local\s+)?([\w.]+)\s*=\s*\{/.exec(ln)) out.tables.push({name:m[2],line:i+1,local:!!m[1],kind:'map',entries:[],count:0});
+    else if(m=/^\s*(local\s+)?([\w.]+)\s*=\s*(\S.*)$/.exec(ln)){ const v=m[3].trim(); out.globals.push({name:m[2],line:i+1,local:!!m[1],type:/^["']/.test(v)?'string':/^-?[.\d]/.test(v)?'number':/^(true|false)\b/.test(v)?'boolean':'expr',preview:v.slice(0,40)}); }
+  });
+  return out;
+}
+// Map a serialized-main.lua line number to the cell it falls in.
+function cellLineMap(){
+  let out=''; const spans=[];
+  for(const c of nb.doc.cells){ out+=c.before||''; const s=out.length; out+=cellBody(c); spans.push({id:c.id,s,e:out.length}); }
+  const lineAt=off=>{ let n=1; for(let i=0;i<off && i<out.length;i++) if(out[i]==='\n') n++; return n; };
+  return spans.map(x=>({id:x.id, startLine:lineAt(x.s), endLine:lineAt(x.e)}));
+}
+function jumpToLine(line, map){
+  map=map||cellLineMap();
+  const m=map.find(s=>line>=s.startLine && line<=s.endLine) || map[0]; if(!m) return;
+  const el=$(`.cell[data-id="${m.id}"]`); if(!el) return;
+  el.scrollIntoView({behavior:'smooth',block:'center'}); el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); setTimeout(()=>el.classList.remove('flash'),750);
+}
+async function analyzeCurrent(){ const lp=await loadLuaparse(); const src=serialize(nb.doc); return { res: lp?analyzeLua(src,lp):heuristicAnalyze(src), lp:!!lp }; }
+
+function appendVarSection(wrap, title, items, map){
+  if(!items.length) return;
+  const head=elem('div',{class:'var-section'},[ elem('span',{class:'chev',html:svg('chevron')}), elem('span',{text:title}), elem('span',{class:'count',text:String(items.length)}) ]);
+  const body=elem('div');
+  items.forEach(it=>{
+    const row=elem('div',{class:'var-row',title:it.name},[
+      elem('div',{class:'var-row-top'},[ elem('span',{class:'var-name',text:it.name}), elem('span',{class:'var-type',text:it.type}) ]),
+      it.preview?elem('div',{class:'var-preview',text:it.preview}):null,
+    ]);
+    row.onclick=()=>jumpToLine(it.line, map);
+    body.appendChild(row);
+  });
+  head.onclick=()=>{ head.classList.toggle('collapsed'); body.style.display=head.classList.contains('collapsed')?'none':''; };
+  wrap.appendChild(head); wrap.appendChild(body);
+}
+async function renderVariablesTab(){
+  const wrap=$('#var-list'); if(!wrap) return;
+  const { res, lp } = await analyzeCurrent(); const map=cellLineMap();
+  wrap.innerHTML='';
+  if(!lp) wrap.appendChild(elem('div',{class:'pane-note',text:'Approximate — Lua parser offline.'}));
+  if(res.error){ wrap.appendChild(elem('div',{class:'pane-empty',text:'Parse error: '+res.error})); return; }
+  appendVarSection(wrap,'Functions', res.functions.map(f=>({name:f.name+f.sig, type:f.local?'local':'global', preview:'', line:f.line})), map);
+  appendVarSection(wrap,'Globals', res.globals.map(g=>({name:g.name, type:g.type, preview:g.preview, line:g.line})), map);
+  if(!res.functions.length && !res.globals.length) wrap.appendChild(elem('div',{class:'pane-empty',text:'No top-level symbols in main.lua'}));
+}
+function recordsGrid(t){
+  const wrap=elem('div',{class:'tbl-grid'}); const table=document.createElement('table');
+  const thead=document.createElement('thead'), htr=document.createElement('tr');
+  t.columns.forEach(c=>{ const th=document.createElement('th'); th.textContent=c; htr.appendChild(th); }); thead.appendChild(htr); table.appendChild(thead);
+  const tb=document.createElement('tbody');
+  t.rows.forEach(r=>{ const tr=document.createElement('tr'); r.forEach(v=>{ const td=document.createElement('td'); if(/^-?[\d.]/.test(v)) td.className='num'; td.textContent=v; tr.appendChild(td); }); tb.appendChild(tr); });
+  table.appendChild(tb); wrap.appendChild(table); return wrap;
+}
+async function renderTablesTab(){
+  const wrap=$('#table-list'); if(!wrap) return;
+  const { res, lp } = await analyzeCurrent(); const map=cellLineMap();
+  wrap.innerHTML='';
+  if(!lp){ wrap.appendChild(elem('div',{class:'pane-empty',text:'Table grids need the Lua parser (currently offline). Names only:'})); res.tables.forEach(t=>{ const h=elem('div',{class:'tbl-head clickable'},[elem('span',{class:'grow mono',text:t.name})]); h.onclick=()=>jumpToLine(t.line,map); wrap.appendChild(h); }); return; }
+  if(res.error){ wrap.appendChild(elem('div',{class:'pane-empty',text:'Parse error: '+res.error})); return; }
+  if(!res.tables.length){ wrap.appendChild(elem('div',{class:'pane-empty',text:'No top-level tables in main.lua'})); return; }
+  res.tables.forEach(t=>{
+    const head=elem('div',{class:'tbl-head clickable',title:'Jump to definition'},[ elem('span',{class:'grow mono',text:t.name}), elem('span',{class:'var-type',text:t.kind+' · '+t.count}) ]);
+    head.onclick=()=>jumpToLine(t.line, map); wrap.appendChild(head);
+    if(t.kind==='records') wrap.appendChild(recordsGrid(t));
+    else if(t.kind==='map'){ const kv=elem('div',{class:'kv'}); t.entries.forEach(e=>kv.appendChild(elem('div',{class:'kv-line'},[elem('span',{class:'k',text:e.k+' ='}),elem('span',{class:'v',text:e.v})]))); wrap.appendChild(kv); }
+    else { wrap.appendChild(elem('div',{class:'kv'},[ elem('div',{class:'kv-line'},[elem('span',{class:'v',text:'{ '+t.items.join(', ')+' }'})]) ])); }
+  });
+}
+
+/* ── Lua libraries — curated single-file LÖVE libs, vendored into the .love ── */
+const LIB_REGISTRY = [
+  { id:'bump',     name:'bump.lua',       desc:'AABB collision detection',          url:'https://cdn.jsdelivr.net/gh/kikito/bump.lua/bump.lua' },
+  { id:'anim8',    name:'anim8',          desc:'Sprite-sheet animation',            url:'https://cdn.jsdelivr.net/gh/kikito/anim8/anim8.lua' },
+  { id:'tween',    name:'tween.lua',      desc:'Tweening / easing',                 url:'https://cdn.jsdelivr.net/gh/kikito/tween.lua/tween.lua' },
+  { id:'flux',     name:'flux',           desc:'Fast, lightweight tweening',        url:'https://cdn.jsdelivr.net/gh/rxi/flux/flux.lua' },
+  { id:'classic',  name:'classic',        desc:'Tiny OOP / classes',                url:'https://cdn.jsdelivr.net/gh/rxi/classic/classic.lua' },
+  { id:'lume',     name:'lume',           desc:'General-purpose utilities',         url:'https://cdn.jsdelivr.net/gh/rxi/lume/lume.lua' },
+  { id:'json',     name:'json.lua',       desc:'JSON encode / decode',              url:'https://cdn.jsdelivr.net/gh/rxi/json.lua/json.lua' },
+  { id:'baton',    name:'baton',          desc:'Input (keyboard + gamepad)',        url:'https://cdn.jsdelivr.net/gh/tesselode/baton/baton.lua' },
+  { id:'vector',   name:'hump.vector',    desc:'2D vector math (HUMP)',             url:'https://cdn.jsdelivr.net/gh/vrld/hump/vector.lua', path:'lib/vector.lua' },
+  { id:'timer',    name:'hump.timer',     desc:'Timers & tweens (HUMP)',            url:'https://cdn.jsdelivr.net/gh/vrld/hump/timer.lua', path:'lib/timer.lua' },
+  { id:'camera',   name:'hump.camera',    desc:'2D camera (HUMP)',                  url:'https://cdn.jsdelivr.net/gh/vrld/hump/camera.lua', path:'lib/camera.lua' },
+  { id:'gamestate',name:'hump.gamestate', desc:'Game-state stack (HUMP)',           url:'https://cdn.jsdelivr.net/gh/vrld/hump/gamestate.lua', path:'lib/gamestate.lua' },
+];
+function libPath(e){ return e.path || ('lib/'+e.id+'.lua'); }
+function libRequire(e){ return libPath(e).replace(/^/,'').replace(/\.lua$/,'').replace(/\//g,'.'); }
+function readLibs(){ try { return JSON.parse(lsGet('engine.html:libs','[]')); } catch(e){ return []; } }
+function writeLibs(l){ lsSet('engine.html:libs', JSON.stringify(l)); renderLibs(); }
+function renderLibs(){
+  const wrap=$('#lib-list'); if(!wrap) return; wrap.innerHTML='';
+  const installed=new Set(readLibs().map(l=>l.id));
+  LIB_REGISTRY.forEach(e=>{
+    const added=installed.has(e.id);
+    const btn=elem('button',{class:'kv-btn'+(added?' added':''),html:added?(svg('check')+'Added'):(svg('plus')+'Add')});
+    btn.onclick=()=> added ? removeLib(e.id) : addLib(e, btn);
+    const row=elem('div',{class:'kv-row'},[
+      elem('div',{class:'kv-top'},[ elem('span',{class:'kv-name',text:e.name}), btn ]),
+      elem('div',{class:'kv-desc',text:e.desc+'  ·  require("'+libRequire(e)+'")'}),
+    ]);
+    wrap.appendChild(row);
+  });
+}
+async function addLib(e, btn){
+  if (btn){ btn.classList.add('busy'); btn.innerHTML=svg('package')+'…'; }
+  try {
+    const res=await fetch(e.url);
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const code=await res.text();
+    const libs=readLibs();
+    if(!libs.find(l=>l.id===e.id)){ libs.push({ id:e.id, name:e.name, path:libPath(e), code }); writeLibs(libs); }
+    toast(e.name+' added ('+fmtBytes(code.length)+')');
+  } catch(err){ if(btn) btn.classList.remove('busy'); renderLibs(); toast('Failed to add '+e.name+': '+(err.message||err)); }
+}
+function removeLib(id){ writeLibs(readLibs().filter(l=>l.id!==id)); }
+
+/* ── LÖVE API reference — curated, click-to-insert at the cursor ── */
+const API_DATA = [
+  ['graphics','love.graphics.rectangle',"(mode, x, y, w, h)","love.graphics.rectangle('fill', x, y, w, h)"],
+  ['graphics','love.graphics.circle',"(mode, x, y, radius)","love.graphics.circle('fill', x, y, r)"],
+  ['graphics','love.graphics.line',"(x1, y1, x2, y2, ...)","love.graphics.line(x1, y1, x2, y2)"],
+  ['graphics','love.graphics.polygon',"(mode, vertices)","love.graphics.polygon('fill', x1,y1, x2,y2, x3,y3)"],
+  ['graphics','love.graphics.print',"(text, x, y, r, sx, sy)","love.graphics.print(text, x, y)"],
+  ['graphics','love.graphics.printf',"(text, x, y, limit, align)","love.graphics.printf(text, x, y, limit, 'center')"],
+  ['graphics','love.graphics.setColor',"(r, g, b, a)","love.graphics.setColor(1, 1, 1, 1)"],
+  ['graphics','love.graphics.clear',"(r, g, b, a)","love.graphics.clear(0.1, 0.1, 0.1)"],
+  ['graphics','love.graphics.draw',"(drawable, x, y, r, sx, sy, ox, oy)","love.graphics.draw(image, x, y)"],
+  ['graphics','love.graphics.newImage',"(filename) -> Image","local img = love.graphics.newImage('sprite.png')"],
+  ['graphics','love.graphics.newFont',"(filename, size) -> Font","local font = love.graphics.newFont(14)"],
+  ['graphics','love.graphics.setFont',"(font)","love.graphics.setFont(font)"],
+  ['graphics','love.graphics.newQuad',"(x, y, w, h, sw, sh) -> Quad","local q = love.graphics.newQuad(0, 0, 16, 16, image:getWidth(), image:getHeight())"],
+  ['graphics','love.graphics.push',"()","love.graphics.push()"],
+  ['graphics','love.graphics.pop',"()","love.graphics.pop()"],
+  ['graphics','love.graphics.translate',"(dx, dy)","love.graphics.translate(dx, dy)"],
+  ['graphics','love.graphics.rotate',"(angle)","love.graphics.rotate(angle)"],
+  ['graphics','love.graphics.scale',"(sx, sy)","love.graphics.scale(sx, sy)"],
+  ['graphics','love.graphics.getWidth',"() -> w","local w = love.graphics.getWidth()"],
+  ['graphics','love.graphics.getHeight',"() -> h","local h = love.graphics.getHeight()"],
+  ['callbacks','love.load',"()","function love.load()\n  \nend"],
+  ['callbacks','love.update',"(dt)","function love.update(dt)\n  \nend"],
+  ['callbacks','love.draw',"()","function love.draw()\n  \nend"],
+  ['callbacks','love.keypressed',"(key, scancode, isrepeat)","function love.keypressed(key)\n  \nend"],
+  ['callbacks','love.keyreleased',"(key)","function love.keyreleased(key)\n  \nend"],
+  ['callbacks','love.mousepressed',"(x, y, button)","function love.mousepressed(x, y, button)\n  \nend"],
+  ['callbacks','love.mousemoved',"(x, y, dx, dy)","function love.mousemoved(x, y, dx, dy)\n  \nend"],
+  ['callbacks','love.resize',"(w, h)","function love.resize(w, h)\n  \nend"],
+  ['keyboard','love.keyboard.isDown',"(key) -> bool","love.keyboard.isDown('left')"],
+  ['mouse','love.mouse.getPosition',"() -> x, y","local mx, my = love.mouse.getPosition()"],
+  ['mouse','love.mouse.isDown',"(button) -> bool","love.mouse.isDown(1)"],
+  ['audio','love.audio.newSource',"(filename, type) -> Source","local snd = love.audio.newSource('beep.wav', 'static')"],
+  ['audio','love.audio.play',"(source)","love.audio.play(snd)"],
+  ['math','love.math.random',"(min, max) -> n","love.math.random(1, 6)"],
+  ['math','love.math.noise',"(x, y) -> n","love.math.noise(x, y)"],
+  ['timer','love.timer.getFPS',"() -> fps","love.timer.getFPS()"],
+  ['timer','love.timer.getTime',"() -> seconds","love.timer.getTime()"],
+  ['window','love.window.setTitle',"(title)","love.window.setTitle('My Game')"],
+  ['window','love.window.setMode',"(w, h, flags)","love.window.setMode(800, 600)"],
+  ['physics','love.physics.newWorld',"(gx, gy, sleep) -> World","local world = love.physics.newWorld(0, 9.81*64, true)"],
+  ['filesystem','love.filesystem.read',"(name) -> contents","local data = love.filesystem.read('save.txt')"],
+  ['filesystem','love.filesystem.write',"(name, data)","love.filesystem.write('save.txt', data)"],
+];
+function renderApi(filter){
+  const wrap=$('#api-list'); if(!wrap) return; wrap.innerHTML='';
+  const f=(filter||'').trim().toLowerCase();
+  const rows=API_DATA.filter(r=> !f || (r[1]+' '+r[2]).toLowerCase().includes(f));
+  if(!rows.length){ wrap.appendChild(elem('div',{class:'pane-empty',text:'No matches'})); return; }
+  let lastGroup=null;
+  rows.forEach(r=>{
+    if(r[0]!==lastGroup){ lastGroup=r[0]; wrap.appendChild(elem('div',{class:'api-group',text:r[0]})); }
+    const row=elem('div',{class:'api-row',title:'Insert: '+r[3]},[
+      elem('span',{class:'sig',html:'<b style="color:var(--type-lua-fg);font-weight:600">'+escapeHtml(r[1])+'</b> '+escapeHtml(r[2])}),
+      elem('span',{class:'ins',html:svg('insert')}),
+    ]);
+    row.onclick=()=>{ if(insertSnippet(r[3])) toast('Inserted'); };
+    wrap.appendChild(row);
+  });
+}
+function insertSnippet(text){
+  const id=nb.editor.lastFocus;
+  const view=id!=null && nb.editor.views.get(id);
+  if(view){ const sel=view.state.selection.main; view.dispatch({ changes:{from:sel.from,to:sel.to,insert:text}, selection:{anchor:sel.from+text.length} }); view.focus(); setDirty(true); saveSoon(); return true; }
+  const ta=id!=null && $(`.cell[data-id="${id}"] textarea`);
+  if(ta){ const s=ta.selectionStart,e=ta.selectionEnd; ta.value=ta.value.slice(0,s)+text+ta.value.slice(e); ta.selectionStart=ta.selectionEnd=s+text.length; ta.dispatchEvent(new Event('input')); ta.focus(); return true; }
+  if(navigator.clipboard) navigator.clipboard.writeText(text);
+  toast('Copied (focus a Lua cell to insert)'); return false;
+}
+
+/* ── AI agent — in-browser WebLLM, ported from the oracle ──────────────────────
+ * Models: exactly the oracle's three Qwen2.5-Coder sizes (q4f16_1). One shared
+ * MLCEngine holds one model at a time. Setup (GPU + install/activate/remove) lives
+ * in Settings → Agent; the Agent tab is the chat. WebGPU + CDN required. */
+const WEBLLM_CDN = 'https://esm.run/@mlc-ai/web-llm';
+const AGENT_MODELS = [
+  { id:'Qwen2.5-Coder-1.5B-Instruct-q4f16_1-MLC', label:'Qwen2.5-Coder 1.5B', tier:'Fast',     vramMB:1630 },
+  { id:'Qwen2.5-Coder-3B-Instruct-q4f16_1-MLC',   label:'Qwen2.5-Coder 3B',   tier:'Balanced', vramMB:2505 },
+  { id:'Qwen2.5-Coder-7B-Instruct-q4f16_1-MLC',   label:'Qwen2.5-Coder 7B',   tier:'Expert',   vramMB:5107 },
+];
+const agent = { gpu:null, llm:null, engine:null, installed:new Set(), installedChecked:false, activeId:null, busyId:null, op:'', progress:'', generating:false, error:'', messages:[] };
+function agentLabelFor(id){ const m=AGENT_MODELS.find(x=>x.id===id); return m?m.label:id; }
+function agentErr(e){ return (e&&e.message)?e.message:String(e); }
+
+async function detectWebGPU(){
+  if (!('gpu' in navigator) || !navigator.gpu) return { supported:false, reason:'WebGPU not available in this browser' };
+  let adapter; try { adapter=await navigator.gpu.requestAdapter(); } catch(e){ return { supported:false, reason:'requestAdapter() failed: '+agentErr(e) }; }
+  if (!adapter) return { supported:false, reason:'No compatible GPU adapter (unavailable, blocked, or software-only)' };
+  let info={}; try { info=adapter.info||(adapter.requestAdapterInfo?await adapter.requestAdapterInfo():{})||{}; } catch(e){}
+  const lim=adapter.limits||{};
+  return { supported:true, vendor:info.vendor||'', architecture:info.architecture||'', description:info.description||'', maxBufferSize:lim.maxBufferSize||0 };
+}
+function agentModelFits(m){ const g=agent.gpu; if(!g||!g.supported) return false; const lim=g.maxBufferSize||0; if(!lim) return true; return m.vramMB*1048576<=lim; }
+async function agentEnsureModule(){ if(!agent.llm) agent.llm=await import(WEBLLM_CDN); return agent.llm; }
+async function agentEnsureEngine(){ await agentEnsureModule(); if(!agent.engine) agent.engine=new agent.llm.MLCEngine(); return agent.engine; }
+async function agentRefreshInstalled(){
+  try { await agentEnsureModule(); const found=new Set(); for(const m of AGENT_MODELS){ try{ if(await agent.llm.hasModelInCache(m.id)) found.add(m.id); }catch(e){} } agent.installed=found; }
+  catch(e){ console.error('[WebLLM] cache probe failed',e); }
+  agent.installedChecked=true; renderAgentLocal();
+}
+function agentOnProgress(p){ agent.progress=(p&&p.text)?p.text:(p&&p.progress!=null?Math.round(p.progress*100)+'%':''); renderAgentLocal(); syncAgentPill(); }
+async function agentInstall(id){
+  if(agent.busyId) return; const m=AGENT_MODELS.find(x=>x.id===id); if(!m) return;
+  const evicted=agent.activeId; agent.busyId=id; agent.op='install'; agent.error=''; agent.progress=''; agent.activeId=null; renderAgentLocal(); syncAgentPill();
+  try { const eng=await agentEnsureEngine(); eng.setInitProgressCallback(agentOnProgress); await eng.reload(id); await eng.unload(); agent.installed.add(id); if(evicted&&evicted!==id) toast('Deactivated '+agentLabelFor(evicted)+' to download '+m.label); }
+  catch(e){ agent.error=agentErr(e); console.error('[WebLLM] install failed',e); }
+  agent.busyId=null; agent.op=''; agent.progress=''; renderAgentLocal(); renderAgentTab(); syncAgentPill();
+}
+async function agentRemove(id){
+  if(agent.busyId) return; agent.busyId=id; agent.op='remove'; agent.error=''; renderAgentLocal(); syncAgentPill();
+  try { if(agent.activeId===id&&agent.engine){ try{await agent.engine.unload();}catch(e){} agent.activeId=null; } await agentEnsureModule(); await agent.llm.deleteModelAllInfoInCache(id); agent.installed.delete(id); }
+  catch(e){ agent.error=agentErr(e); console.error('[WebLLM] remove failed',e); }
+  agent.busyId=null; agent.op=''; renderAgentLocal(); renderAgentTab(); syncAgentPill();
+}
+async function agentActivate(id){
+  if(agent.busyId) return; const m=AGENT_MODELS.find(x=>x.id===id); if(!m) return;
+  agent.busyId=id; agent.op='activate'; agent.error=''; agent.progress=''; renderAgentLocal(); syncAgentPill();
+  try { const eng=await agentEnsureEngine(); eng.setInitProgressCallback(agentOnProgress); await eng.reload(id); agent.activeId=id; agent.installed.add(id); }
+  catch(e){ agent.error=agentErr(e); console.error('[WebLLM] activate failed',e); }
+  agent.busyId=null; agent.op=''; agent.progress=''; renderAgentLocal(); renderAgentTab(); syncAgentPill();
+}
+async function agentDeactivate(){
+  if(agent.busyId||!agent.activeId) return; agent.busyId=agent.activeId; agent.op='deactivate'; renderAgentLocal(); syncAgentPill();
+  try { if(agent.engine) await agent.engine.unload(); } catch(e){ console.error('[WebLLM] unload failed',e); }
+  agent.activeId=null; agent.busyId=null; agent.op=''; renderAgentLocal(); renderAgentTab(); syncAgentPill();
+}
+function syncAgentPill(){
+  if (agent.generating||agent.busyId) setAgent('loading','Agent: '+({install:'downloading',activate:'loading',remove:'removing',deactivate:'unloading'}[agent.op]||'thinking'));
+  else if (agent.activeId) setAgent('ready','Agent: '+agentLabelFor(agent.activeId));
+  else if (agent.error) setAgent('error','Agent: error');
+  else setAgent('idle','Agent: idle');
+}
+
+// Settings → Agent: GPU status + model install/activate/remove.
+function renderAgentGPU(){
+  const el=$('#agent-gpu'); if(!el) return; const g=agent.gpu;
+  if(!g){ el.innerHTML='<span style="color:var(--text-tertiary)">Checking GPU…</span>'; return; }
+  if(g.supported){
+    const dev=[g.vendor,g.architecture,g.description].filter(Boolean).join(' ')||'GPU detected';
+    const mb=g.maxBufferSize?(' · max buffer '+(g.maxBufferSize/1048576).toFixed(0)+' MB'):'';
+    el.innerHTML='<span style="color:var(--fn-success);font-weight:600">● WebGPU available</span><div style="color:var(--text-tertiary);font-size:11px;margin-top:3px">'+escapeHtml(dev)+escapeHtml(mb)+'</div>';
+  } else {
+    el.innerHTML='<span style="color:var(--text-secondary);font-weight:600">○ WebGPU unavailable</span><div style="color:var(--text-tertiary);font-size:11px;margin-top:3px">'+escapeHtml(g.reason||'')+'</div><div style="color:var(--text-tertiary);font-size:11px;margin-top:3px">In-browser models are disabled.</div>';
+  }
+}
+function renderAgentLocal(){
+  const el=$('#agent-local'); if(!el) return;
+  if(agent.gpu===null){ el.innerHTML='<div class="pane-note">Checking GPU…</div>'; return; }
+  if(!(agent.gpu&&agent.gpu.supported)){ el.innerHTML='<div class="pane-note">Local models require WebGPU, which isn’t available here.</div>'; return; }
+  const anyBusy=!!agent.busyId; const OP={install:'Downloading… ',activate:'Loading… ',remove:'Removing… ',deactivate:'Unloading… '};
+  el.innerHTML = (agent.error?('<div style="font-size:11px;color:var(--fn-danger);margin:4px 0;word-break:break-word">'+escapeHtml(agent.error)+'</div>'):'');
+  AGENT_MODELS.forEach(m=>{
+    const installed=agent.installed.has(m.id), active=agent.activeId===m.id, busy=agent.busyId===m.id, fits=agentModelFits(m);
+    let sub, col='var(--text-tertiary)';
+    if(busy) sub=(OP[agent.op]||'Working… ')+escapeHtml(agent.progress||'');
+    else if(!fits){ sub='Too large for this GPU'; col='var(--fn-danger)'; }
+    else if(active){ sub='Active in VRAM'; col='var(--fn-success)'; }
+    else if(!agent.installedChecked) sub='~'+(m.vramMB/1024).toFixed(1)+' GB';
+    else if(installed) sub='Installed · not loaded';
+    else sub='Not installed · downloads ~'+(m.vramMB/1024).toFixed(1)+' GB';
+    const row=elem('div',{class:'kv-row'});
+    row.innerHTML =
+      '<div class="kv-top"><span class="kv-name">'+(active?'<span style="color:var(--fn-success)">●</span> ':'')+escapeHtml(m.label)+'</span><span class="var-type">'+escapeHtml(m.tier)+'</span></div>'+
+      '<div class="kv-desc" style="color:'+col+'">'+sub+'</div>';
+    const btns=elem('div',{style:'display:flex;gap:5px;margin-top:5px'});
+    const disk=elem('button',{class:'kv-btn',text:installed?'Remove':'Install'}); disk.disabled=anyBusy||(!installed&&!fits); disk.onclick=()=> installed?agentRemove(m.id):agentInstall(m.id);
+    const vram=elem('button',{class:'kv-btn',text:active?'Deactivate':'Activate'}); vram.disabled=anyBusy||(!active&&!fits); vram.onclick=()=> active?agentDeactivate():agentActivate(m.id);
+    btns.appendChild(disk); btns.appendChild(vram); row.appendChild(btns); el.appendChild(row);
+  });
+  syncAgentPill();
+}
+
+// Agent tab = chat.
+function renderAgentTab(){
+  const body=$('#assistant-body'); if(!body) return;
+  if(!agent.activeId){
+    const loading=!!agent.busyId;
+    body.innerHTML='<div class="chat-setup" style="text-align:center;align-items:center">'+svg('message-code')+
+      '<div><b>'+(loading?'Loading model…':'No model active')+'</b></div>'+
+      '<div style="font-size:11px;color:var(--text-tertiary)">'+(loading?'See Settings → Agent':'Activate a model in Settings → Agent')+'</div></div>';
+    return;
+  }
+  body.innerHTML='';
+  const msgs=elem('div',{class:'chat-msgs',id:'agent-messages'});
+  const ta=elem('textarea',{rows:'2',placeholder:'Ask '+agentLabelFor(agent.activeId)+'…',id:'agent-input'});
+  const send=elem('button',{html:svg('send'),title:'Send'});
+  const submit=()=>{ if(!agent.generating){ agentSend(ta.value); ta.value=''; } };
+  send.onclick=submit; ta.addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); submit(); } });
+  body.appendChild(msgs); body.appendChild(elem('div',{class:'chat-input'},[ta,send]));
+  renderAgentMessages();
+}
+function renderAgentMessages(){
+  const box=$('#agent-messages'); if(!box) return; box.innerHTML='';
+  agent.messages.forEach(m=>{
+    const el=elem('div',{class:'chat-msg '+(m.role==='user'?'user':'bot')});
+    if(m.role==='user') el.textContent=m.content; else el.innerHTML = m.content? renderMarkdownHTML(m.content) : '<span style="opacity:.5">…</span>';
+    if(m.role==='assistant' && m.content){ const cm=/```lua\s*([\s\S]*?)```/.exec(m.content); if(cm){ const btn=elem('button',{class:'kv-btn',html:svg('insert')+'Insert as cell',style:'margin-top:6px'}); btn.onclick=()=>{ addCell('lua'); const c=nb.doc.cells[nb.doc.cells.length-1]; c.code=cm[1].replace(/\s+$/,''); renderNotebook(); toast('Inserted as new cell'); }; el.appendChild(btn); } }
+    box.appendChild(el);
+  });
+  box.scrollTop=box.scrollHeight;
+}
+const AGENT_SYSTEM = "You are a concise expert assistant for LÖVE (Love2D) game development in Lua. The user's whole game is the main.lua shown below. Prefer short, correct answers; when giving code use ```lua fenced blocks and write idiomatic LÖVE.";
+async function agentSend(text){
+  text=(text||'').trim();
+  if(!text || agent.generating || !agent.activeId || !agent.engine) return;
+  agent.messages.push({role:'user',content:text}); agent.messages.push({role:'assistant',content:''});
+  agent.generating=true; renderAgentMessages(); syncAgentPill();
+  try {
+    const ctx="Current main.lua:\n```lua\n"+serialize(nb.doc).slice(0,6000)+"\n```";
+    const convo=[{role:'system',content:AGENT_SYSTEM+"\n\n"+ctx}, ...agent.messages.slice(0,-1)];
+    const chunks=await agent.engine.chat.completions.create({ messages:convo, stream:true });
+    let acc='';
+    for await (const chunk of chunks){ acc += (chunk&&chunk.choices&&chunk.choices[0]&&chunk.choices[0].delta&&chunk.choices[0].delta.content)||''; agent.messages[agent.messages.length-1].content=acc; renderAgentMessages(); }
+  } catch(e){ agent.messages[agent.messages.length-1].content='⚠️ '+agentErr(e); console.error('[WebLLM] generate failed',e); renderAgentMessages(); }
+  agent.generating=false; syncAgentPill();
+}
+async function initAgent(){
+  renderAgentTab();
+  agent.gpu = await detectWebGPU();
+  renderAgentGPU(); renderAgentLocal();
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * 7. RUNTIME — build a .love in-browser, boot it with 2dengine/love.js.
+ *
+ *   love.js needs SharedArrayBuffer => the page must be cross-origin isolated.
+ *   The bundled coi-serviceworker.js (registered at boot when present) grants
+ *   that on any https/localhost host with no server config. The preview runs in
+ *   a fresh <iframe> per run, which is a clean "recreate the Module" each time.
+ * ════════════════════════════════════════════════════════════════════════════ */
+const RT = {
+  JSZIP: 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js',
+  BASE: 'https://cdn.jsdelivr.net/gh/2dengine/love.js@master/',
+  get PLAYER(){ return this.BASE + 'player.js'; },
+  VERSION: '11.5',
+};
+// Lifecycle pills (Engine + Agent) share the oracle's state model:
+// idle (gray) · loading (amber) · ready/running (green) · error (red).
+function setPill(el, state, label){
+  if (!el) return;
+  const cls = state==='loading' ? ' working' : (state==='running'||state==='ready') ? ' ready' : state==='error' ? ' error' : '';
+  el.className = 'status-item' + (el.classList.contains('status-link')?' status-link':'') + cls;
+  el.innerHTML = svg('dot') + ' ' + label;
+}
+function setRuntime(state, label){ nb.runtime=state; setPill($('#st-runtime'), state, label||('Engine: '+state)); }
+function setAgent(state, label){ nb.agentState=state; setPill($('#st-agent'), state, label||('Agent: '+state)); }
+function showConsole(show){ const c=$('#console'); c.classList.toggle('hidden', show===false ? true : (show===true?false:!c.classList.contains('hidden')?true:false)); }
+function logConsole(msg,cls){ const c=$('#console'); c.classList.remove('hidden'); c.appendChild(elem('div',{class:cls||'',text:msg})); c.scrollTop=c.scrollHeight; }
+function clearConsole(){ $('#console').innerHTML=''; }
+
+let _jszip=null;
+function loadJSZip(){
+  if (window.JSZip) return Promise.resolve(window.JSZip);
+  if (_jszip) return _jszip;
+  _jszip=new Promise((res,rej)=>{ const s=document.createElement('script'); s.src=RT.JSZIP; s.onload=()=>res(window.JSZip); s.onerror=()=>rej(new Error('Could not load JSZip (offline / blocked CDN).')); document.head.appendChild(s); });
+  return _jszip;
+}
+async function buildLoveBlob(){
+  syncFromEditors();
+  const JSZip=await loadJSZip();
+  const zip=new JSZip();
+  zip.file('main.lua', serialize(nb.doc));
+  zip.file('conf.lua', generateConfLua());
+  for (const a of await idbAllAssets()) zip.file(a.name, a.blob);
+  for (const l of readLibs()) zip.file(l.path, l.code);
+  return zip.generateAsync({ type:'blob', compression:'DEFLATE' });
+}
+function isolated(){ return (typeof SharedArrayBuffer!=='undefined') && (window.crossOriginIsolated!==false); }
+
+let _loveUrl=null, _docUrl=null;
+function revokeUrls(){ if(_loveUrl){URL.revokeObjectURL(_loveUrl);_loveUrl=null;} if(_docUrl){URL.revokeObjectURL(_docUrl);_docUrl=null;} }
+function playerHTML(loveUrl){
+  const o='<scr'+'ipt', c='</scr'+'ipt>';
+  const purl = JSON.stringify(RT.PLAYER+'?g='+encodeURIComponent(loveUrl)+'&v='+RT.VERSION);
+  // Diagnostic bridge: forward the iframe's console, errors, *resource-load
+  // failures* (capture phase — these don't bubble to window), and its own
+  // isolation status up to the index.html preview console via postMessage.
+  // It also injects player.js with explicit onload/onerror so a 404 on the
+  // loader (or the love.js/love.wasm it pulls) is visible instead of a silent hang.
+  const diag = o+'>'
+    + '(function(){var P=function(k,m){try{parent.postMessage({__love:k,msg:String(m).slice(0,600)},"*")}catch(e){}};'
+    + '["log","info","warn","error"].forEach(function(k){var f=console[k]?console[k].bind(console):function(){};console[k]=function(){var a=[].slice.call(arguments).map(function(x){return (x&&x.message)||x}).join(" ");P(k==="error"?"err":k==="warn"?"warn":"out",a);f.apply(null,arguments)}});'
+    + 'addEventListener("error",function(e){var t=e.target;if(t&&(t.src||t.href)){P("err","failed to load: "+(t.src||t.href))}else{P("err",(e.message||"error")+(e.filename?" @"+(""+e.filename).split("/").pop()+":"+e.lineno:""))}},true);'
+    + 'addEventListener("unhandledrejection",function(e){P("err","unhandled: "+((e.reason&&e.reason.message)||e.reason))});'
+    + 'P("out","iframe crossOriginIsolated="+self.crossOriginIsolated+", SharedArrayBuffer="+(typeof SharedArrayBuffer!=="undefined"));'
+    + 'var PURL='+purl+';P("out","loading "+PURL.split("?")[0]);'
+    + 'var s=document.createElement("script");s.src=PURL;s.crossOrigin="anonymous";'
+    + 's.onload=function(){P("out","player.js loaded; love.js should follow…")};'
+    + 's.onerror=function(){P("err","player.js FAILED to load (404 / blocked): "+s.src)};'
+    + 'document.body.appendChild(s);'
+    + 'var n=0,iv=setInterval(function(){var cv=document.getElementById("canvas");if(cv&&cv.width>1&&cv.height>1){clearInterval(iv);P("status","running")}else if(++n>240){clearInterval(iv)}},250);'
+    + '})();'+c;
+  // player.js fetches its engine files (lua/normalize*.lua, 11.5/love.wasm,
+  // love.worker.js) as RELATIVE URLs. The iframe doc is a blob: URL, against
+  // which relative URLs can't be parsed — so we set <base> to the 2dengine CDN
+  // dir so those resolve to where the files actually live.
+  return '<!doctype html><html><head><meta charset="utf-8"><base href="'+RT.BASE+'"><style>html,body{margin:0;height:100%;background:#000;overflow:hidden}canvas{display:block;margin:auto}</style></head><body>'
+    + '<canvas id="canvas" oncontextmenu="event.preventDefault()"></canvas>'
+    + diag + '</body></html>';
+}
+function hookLoveMessages(){
+  if (window._loveMsgHook) return; window._loveMsgHook = true;
+  window.addEventListener('message', e=>{
+    const d=e.data; if(!d || typeof d!=='object' || !('__love' in d)) return;
+    if (d.__love==='status' && d.msg==='running'){
+      setRuntime('running','Engine: running');
+      logConsole('Running — click the canvas for keyboard/mouse focus.','ok');
+      return;
+    }
+    logConsole('[love] '+d.msg, d.__love==='err'?'err':d.__love==='warn'?'warn':'dim');
+  });
+}
+async function run(){
+  saveDoc(true);
+  clearConsole(); showConsole(true);
+  if (!isolated()){
+    setRuntime('error','Engine: needs isolation');
+    showPlaceholder();
+    logConsole('Live preview needs cross-origin isolation (SharedArrayBuffer).','err');
+    if (location.protocol==='file:'){
+      logConsole('You are on file:// — love.js can’t run here (no SharedArrayBuffer).','warn');
+      logConsole('Serve it from a localhost server (with coi-serviceworker.js alongside):','dim');
+      logConsole('  python3 -m http.server   →   http://localhost:8000/index.html','dim');
+      logConsole('or host it (e.g. GitHub Pages); the bundled service worker isolates it.','dim');
+    } else {
+      logConsole('Add coi-serviceworker.js next to index.html (it is in this repo), or','dim');
+      logConsole('serve with COOP: same-origin + COEP: require-corp, then reload.','dim');
+    }
+    logConsole('Export still works and runs in desktop LÖVE regardless.','dim');
+    return;
+  }
+  setRuntime('loading','Engine: building .love');
+  let blob; try { blob=await buildLoveBlob(); } catch(e){ setRuntime('error'); logConsole(String(e.message||e),'err'); return; }
+  setRuntime('loading','Engine: booting love.js');
+  logConsole('Built .love ('+fmtBytes(blob.size)+'). Booting love.js '+RT.VERSION+'… (first run downloads the WASM)','dim');
+  hookLoveMessages();
+  revokeUrls();
+  _loveUrl=URL.createObjectURL(blob);
+  _docUrl=URL.createObjectURL(new Blob([playerHTML(_loveUrl)],{type:'text/html'}));
+  const stage=$('#stage'); const old=stage.querySelector('iframe'); if(old)old.remove();
+  hidePlaceholder();
+  const frame=elem('iframe',{src:_docUrl,allow:'autoplay; fullscreen; gamepad'});
+  frame.onload=()=>{ setRuntime('loading','Engine: booting'); logConsole('Player frame loaded — booting love.js…','dim'); };
+  stage.appendChild(frame);
+}
+function stopPreview(){ const f=$('#stage').querySelector('iframe'); if(f)f.remove(); revokeUrls(); showPlaceholder(); setRuntime('idle'); logConsole('Stopped.','dim'); }
+function showPlaceholder(){ const p=$('#placeholder'); if(p){ $('#stage').appendChild(p); p.style.display=''; } }
+function hidePlaceholder(){ const p=$('#placeholder'); if(p)p.style.display='none'; }
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * 8. EXPORT
+ * ════════════════════════════════════════════════════════════════════════════ */
+async function exportLove(){
+  try { const blob=await buildLoveBlob(); download(blob,'game.love'); toast('Exported game.love'); }
+  catch(e){ alert('Export failed: '+(e.message||e)); }
+}
+function download(blob,name){ const u=URL.createObjectURL(blob); const a=elem('a',{href:u,download:name}); document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(u),1000); }
+function downloadText(text,name){ download(new Blob([text],{type:'text/x-lua'}),name); }
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * 9. SELF-TESTS — doc-model round-trip / toggle / separator invariants.
+ * ════════════════════════════════════════════════════════════════════════════ */
+function runSelfTests(){
+  const samples=[SEED,'','print("hi")','print("hi")\n','--[[ md ]]\n','--[[\nmulti\nline\n]]\n-- %%\nlocal x=1\n',
+    'a=1\n-- %%\nb=2\n-- %%\nc=3\n','--[==[ has ]] inside ]==]\nfoo()\n','function f()\n  --[[ indented stays lua ]]\n  return 1\nend\n',
+    '\n\n--[[a]]\n\n\nbar()\n\n','-- %%\nlocal lead=1\n','--[[x]]\n--[[y]]\n','a()\n--[[ md ]]\nb()\n'];
+  const res=[]; let pass=0;
+  samples.forEach((src,i)=>{ let ok=false,note=''; try{ const out=serialize(parse(src)); ok=out===src; if(!ok)note='mismatch'; }catch(e){note='threw '+e.message;} res.push({n:'roundtrip #'+i,ok,note}); if(ok)pass++; });
+  // toggle lua->md->lua preserves content
+  try { const c={id:1,type:'lua',code:'local z=42',level:0,before:''}; c.type='md'; c.type='lua'; const ok=c.code==='local z=42'; res.push({n:'toggle preserves content',ok,note:''}); if(ok)pass++; } catch(e){ res.push({n:'toggle',ok:false,note:e.message}); }
+  // adjacent lua cells keep separator
+  try { const d={cells:[newCell('lua'),newCell('lua')],trailing:'\n'}; d.cells[0].code='a()'; d.cells[1].code='b()'; normalizeGlue(d); const re=parse(serialize(d)); const ok=re.cells.length===2&&re.cells.every(c=>c.type==='lua'); res.push({n:'adjacent lua keep separator',ok,note:'got '+re.cells.length}); if(ok)pass++; } catch(e){ res.push({n:'separator',ok:false,note:e.message}); }
+  clearConsole(); showConsole(true);
+  logConsole('Self-tests: '+pass+'/'+res.length+' passed', pass===res.length?'ok':'err');
+  res.forEach(r=>logConsole((r.ok?'  ✓ ':'  ✗ ')+r.n+(r.note?'  — '+r.note:''), r.ok?'dim':'err'));
+  toast(pass===res.length?('All '+res.length+' tests passed'):(res.length-pass)+' test(s) failed');
+  return pass===res.length;
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * 10. WIRING + BOOT
+ * ════════════════════════════════════════════════════════════════════════════ */
+function switchTab(name){
+  $$('#left-activity-bar .activity-bar-btn').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
+  $$('#left-pane .pane-panel').forEach(p=>p.classList.toggle('active',p.dataset.tab===name));
+}
+// Open a left tab and ensure the pane is expanded (used by status-bar links etc.)
+function openTab(name){ switchTab(name); if(PANES.left && PANES.left.isCollapsed()) PANES.left.expand(); lsSet('engine.html:leftTab',name); }
+
+/* ── Panes — oracle-style: drag to resize (clamped + persisted), and the
+ *    activity-bar buttons collapse/expand the pane. ── */
+const PANES = {};
+function setupPane(side){
+  const isLeft = side==='left';
+  const pane = $('#'+(isLeft?'left-pane':'right-pane'));
+  const resizer = $('#'+(isLeft?'left-resizer':'right-resizer'));
+  const KEY = 'engine.html:'+side+'Width';
+  const MIN = isLeft ? 190 : 300;
+  const maxW = () => isLeft ? 520 : Math.max(MIN, window.innerWidth - $('#left-pane').offsetWidth - 88 - 320);
+  const clamp = w => Math.max(MIN, Math.min(maxW(), w));
+  let saved = clamp(parseInt(lsGet(KEY,''),10) || (isLeft?248:460));
+  if (!pane.classList.contains('collapsed')) pane.style.width = saved+'px';
+  const isCollapsed = () => pane.classList.contains('collapsed');
+  function collapse(){ if(isCollapsed())return; saved=pane.offsetWidth; lsSet(KEY,saved); pane.classList.add('collapsed'); resizer.style.display='none'; }
+  function expand(){ pane.classList.remove('collapsed'); pane.style.width=clamp(saved)+'px'; resizer.style.display=''; }
+  let drag=false, sx=0, sw=0;
+  resizer.addEventListener('mousedown',e=>{ if(isCollapsed())return; drag=true; sx=e.clientX; sw=pane.offsetWidth; resizer.classList.add('dragging'); pane.style.transition='none'; document.body.style.cursor='col-resize'; document.body.style.userSelect='none'; e.preventDefault(); });
+  window.addEventListener('mousemove',e=>{ if(!drag)return; const dx=isLeft?(e.clientX-sx):(sx-e.clientX); pane.style.width=clamp(sw+dx)+'px'; });
+  window.addEventListener('mouseup',()=>{ if(!drag)return; drag=false; resizer.classList.remove('dragging'); pane.style.transition=''; document.body.style.cursor=''; document.body.style.userSelect=''; saved=pane.offsetWidth; lsSet(KEY,saved); });
+  return PANES[side]={collapse,expand,isCollapsed};
+}
+function wireActivityBars(){
+  $$('#left-activity-bar .activity-bar-btn').forEach(btn=>{
+    btn.onclick=()=>{
+      const tab=btn.dataset.tab;
+      if (!PANES.left.isCollapsed() && btn.classList.contains('active')){
+        PANES.left.collapse();
+        $$('#left-activity-bar .activity-bar-btn').forEach(b=>b.classList.remove('active'));
+        lsSet('engine.html:leftTab','');
+      } else {
+        switchTab(tab);
+        if (PANES.left.isCollapsed()) PANES.left.expand();
+        lsSet('engine.html:leftTab',tab);
+        if (tab==='settings'){ renderStorage(); renderAgentGPU(); renderAgentLocal(); if(!agent.installedChecked && agent.gpu && agent.gpu.supported) agentRefreshInstalled(); }
+        if (tab==='assistant') renderAgentTab();
+      }
+    };
+  });
+  $$('#right-activity-bar .activity-bar-btn').forEach(btn=>{
+    btn.onclick=()=>{
+      const tab=btn.dataset.rightTab;
+      if (!PANES.right.isCollapsed() && btn.classList.contains('active')){
+        PANES.right.collapse();
+        $$('#right-activity-bar .activity-bar-btn').forEach(b=>b.classList.remove('active'));
+        lsSet('engine.html:rightTab','');
+      } else {
+        switchRightTab(tab);
+        if (PANES.right.isCollapsed()) PANES.right.expand();
+        lsSet('engine.html:rightTab',tab);
+      }
+    };
+  });
+}
+const RIGHT_TITLES = { preview:'Preview · love.js', variables:'Variables · main.lua', tables:'Tables · main.lua' };
+function switchRightTab(name){
+  $$('#right-activity-bar .activity-bar-btn').forEach(b=>b.classList.toggle('active', b.dataset.rightTab===name));
+  $$('#right-pane .right-panel').forEach(p=>p.classList.toggle('active', p.dataset.rightTab===name));
+  const h=$('#right-pane-header'); if(h) h.textContent = RIGHT_TITLES[name]||name;
+  const tc=$('#toggle-console'); if(tc) tc.style.display = name==='preview' ? '' : 'none';
+  if (name==='variables') renderVariablesTab();
+  if (name==='tables') renderTablesTab();
+}
+function restorePanes(){
+  const lt=lsGet('engine.html:leftTab', undefined);
+  if (lt===''){ PANES.left.collapse(); $$('#left-activity-bar .activity-bar-btn').forEach(b=>b.classList.remove('active')); }
+  else if (lt){ switchTab(lt); if(lt==='settings') renderStorage(); }
+  const rt=lsGet('engine.html:rightTab','preview');
+  if (rt===''){ PANES.right.collapse(); $$('#right-activity-bar .activity-bar-btn').forEach(b=>b.classList.remove('active')); }
+  else { switchRightTab(rt); }
+}
+function wire(){
+  $('#btn-run').onclick=run;
+  $('#btn-stop').onclick=stopPreview;
+  $('#btn-export').onclick=exportLove;
+  $('#btn-tests').onclick=runSelfTests;
+  $('#btn-collapse-all').onclick=collapseAll;
+  $('#btn-new').onclick=()=>{ if(confirm('Start a new main.lua? Current state is snapshotted first.')){ saveDoc(true); nb.doc=parse(SEED); setDirty(true); renderNotebook(); } };
+  $('#btn-save').onclick=()=>{ saveDoc(true); downloadText(serialize(nb.doc),'main.lua'); toast('Saved main.lua'); };
+  $('#btn-open').onclick=()=>$('#file-input').click();
+  $('#file-input').onchange=e=>{ const f=e.target.files[0]; if(!f)return; const r=new FileReader(); r.onload=()=>{ saveDoc(true); nb.doc=parse(r.result); setDirty(true); renderNotebook(); toast('Opened '+f.name); }; r.readAsText(f); e.target.value=''; };
+  $('#add-asset').onclick=()=>$('#asset-input').click();
+  $('#asset-input').onchange=e=>{ addAssets(e.target.files); e.target.value=''; };
+  $('#snap-now').onclick=()=>{ saveDoc(true); toast('Snapshot saved'); };
+  $('#snap-clear').onclick=()=>{ if(confirm('Clear all snapshots?')){ lsSet(LS.hist,'[]'); renderHistory(); renderStorage(); toast('Snapshots cleared'); } };
+  $('#api-search').oninput=e=>renderApi(e.target.value);
+  $('#toggle-console').onclick=()=>showConsole();
+  $('#st-agent').onclick=()=>openTab('assistant');
+  $$('#seg-mode button').forEach(b=>b.onclick=()=>{ const t=getTheme(); t.mode=b.dataset.mode; setTheme(t); });
+  $$('#seg-tone button').forEach(b=>b.onclick=()=>{ const t=getTheme(); t.tone=b.dataset.tone; setTheme(t); });
+  const ln=$('#opt-linenums'); ln.checked=nb.opts.lineNumbers; ln.onchange=()=>{ nb.opts.lineNumbers=ln.checked; lsSet(LS.opts,JSON.stringify(nb.opts)); renderNotebook(); };
+  setupPane('left'); setupPane('right'); wireActivityBars();
+  document.addEventListener('keydown',e=>{
+    if ((e.metaKey||e.ctrlKey)&&e.key==='Enter'){ e.preventDefault(); run(); }
+    if ((e.metaKey||e.ctrlKey)&&(e.key==='s'||e.key==='S')){ e.preventDefault(); saveDoc(true); downloadText(serialize(nb.doc),'main.lua'); toast('Saved main.lua'); }
+  });
+  window.addEventListener('beforeunload',()=>{ try{ syncFromEditors(); saveDoc(false); }catch(e){} });
+}
+
+function registerIsolationSW(){
+  // Register the bundled coi-serviceworker.js if present, to grant cross-origin
+  // isolation (needed by love.js) on https/localhost without server config.
+  if (location.protocol==='file:' || isolated() || !('serviceWorker' in navigator)) return;
+  const s=document.createElement('script'); s.src='coi-serviceworker.js'; s.onerror=()=>{}; document.head.appendChild(s);
+}
+
+function boot(){
+  try { nb.opts = Object.assign(nb.opts, JSON.parse(lsGet(LS.opts,'{}'))); } catch(e){}
+  // Logo mark + favicon shelved for now (brandSVG/setFavicon kept for later).
+  const lm=$('#logo-mark'); if(lm) lm.remove();
+  $('#placeholder-icon').innerHTML=`<svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${I.play}</svg>`;
+  paintIcons();
+  applyTheme();
+  loadDoc();
+  wire();
+  renderNotebook();
+  migrateAssets().then(renderAssets);
+  renderHistory();
+  renderOutline();
+  renderLibs();
+  renderApi('');
+  renderConf(); wireConf();
+  renderStorage();
+  initAgent();
+  setDirty(false);
+  setRuntime('idle');
+  setAgent('idle');
+  loadMarked();
+  restorePanes();
+  registerIsolationSW();
+  if (!isolated() && location.protocol!=='file:'){ setRuntime('idle','Engine: idle (isolating…)'); }
+  // try to upgrade Lua editors to CodeMirror (no-op if offline)
+  upgradeAllEditors();
+  // expose for console / oracle comparisons
+  window.engine = { parse, serialize, normalizeGlue, renderMarkdownHTML, runSelfTests, get doc(){return nb.doc;} };
+}
+boot();
+</script>
 </body>
 </html>

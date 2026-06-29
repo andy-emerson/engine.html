@@ -6,7 +6,7 @@ purpose. The "why" lives in `design.md`; the live frontier lives in `TODO.md`.
 ## What this is
 
 LoveIDE is a **single-file, in-browser notebook IDE for LÖVE (Love2D) games**.
-The whole app is `engine.html`. `main.lua` is the **single source of truth**; the
+The whole app is `index.html`. `main.lua` is the **single source of truth**; the
 notebook is a pure projection over it (`serialize(parse(x)) === x`, byte-for-byte).
 
 ## The oracle
@@ -27,7 +27,7 @@ Grade every claim you make by the strongest rung you actually reached:
 2. **Tested** — exercised headless (node round-trip, luaparse AST, a DOM check).
 3. **Dependency-verified** — confirmed against the real library, not a guess
    about its behavior.
-4. **Browser-verified** — you (or the user) loaded `engine.html` and watched it
+4. **Browser-verified** — you (or the user) loaded `index.html` and watched it
    work.
 
 The failure mode is a claim sitting one rung above its evidence. Some things are
@@ -49,7 +49,7 @@ understatement: report what you saw, name what you couldn't test.
 
 ## Single-file constraints
 
-- Everything ships in `engine.html`. No build step, no bundler, no local
+- Everything ships in `index.html`. No build step, no bundler, no local
   `node_modules` in the served artifact.
 - External libs load **from CDN, lazily, with an offline/degraded fallback**
   (textarea instead of CodeMirror, built-in markdown instead of marked, etc.).
@@ -59,9 +59,9 @@ understatement: report what you saw, name what you couldn't test.
   asset storage.
 - The runtime is a **fresh iframe per run** so love.js gets a clean Module.
 
-## Code readability standard (applies to engine.html)
+## Code readability standard (applies to index.html)
 
-Model: `servette.py` and `notebook.html`. Required:
+Model: `notebook.html` (the oracle). Required:
 
 1. **Top-of-file architecture map** — a comment block naming the subsystems and
    the one read path they share (`main.lua` → doc model → everything).
