@@ -851,9 +851,7 @@ function refreshMarkdownCells(){
  * 3. STATE + PERSISTENCE
  * ════════════════════════════════════════════════════════════════════════════ */
 // Persistence keys (origin-scoped localStorage). The `loveide:` prefix is a
-// stable namespace, deliberately decoupled from the filename so a future rename
-// never strands saved state again. Legacy `engine.html:*` keys (the app's old
-// filename) are carried forward once by migrateLegacyKeys() at boot.
+// stable namespace, decoupled from the filename so a rename can't strand state.
 const LS = { doc:'loveide:main.lua', hist:'loveide:history', assets:'loveide:assets', theme:'loveide:theme', opts:'loveide:opts' };
 const SEED = `--[[
 # LoveIDE
@@ -897,24 +895,6 @@ const nb = {
 
 function lsGet(k,d){ try { const v=localStorage.getItem(k); return v==null?d:v; } catch(e){ return d; } }
 function lsSet(k,v){ try { localStorage.setItem(k,v); } catch(e){} }
-
-// One-time rename of the legacy `engine.html:*` persistence keys (the app's old
-// filename) to the `loveide:` prefix. localStorage is origin-scoped, so renaming
-// the file left old saves stranded under the old keys; this copies them forward
-// and drops the originals so existing notebooks survive. Must run before any LS
-// read in boot(). The null-guard avoids clobbering newer data if it ever reruns.
-// Safe to delete this shim once no live origin still holds engine.html:* keys.
-function migrateLegacyKeys(){
-  const OLD='engine.html:', NEW='loveide:';
-  try {
-    for (const k of Object.keys(localStorage)){
-      if (!k.startsWith(OLD)) continue;
-      const nk = NEW + k.slice(OLD.length);
-      if (localStorage.getItem(nk)==null) lsSet(nk, localStorage.getItem(k));
-      localStorage.removeItem(k);
-    }
-  } catch(e){}
-}
 
 function loadDoc(){ nb.doc = parse(lsGet(LS.doc, SEED)); }
 function saveDoc(snapshot){
@@ -2084,7 +2064,6 @@ function registerIsolationSW(){
 }
 
 function boot(){
-  migrateLegacyKeys();   // carry forward any engine.html:* saves before first read
   try { nb.opts = Object.assign(nb.opts, JSON.parse(lsGet(LS.opts,'{}'))); } catch(e){}
   // Logo mark + favicon shelved for now (brandSVG/setFavicon kept for later).
   const lm=$('#logo-mark'); if(lm) lm.remove();
