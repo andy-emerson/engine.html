@@ -81,7 +81,7 @@ Mirrors the numbered banner sections in `index.html` (JS sections 0–10).
 | 4 | Theme | 6 themes via CSS variables; brand pink/steel | `getTheme`, `applyTheme` |
 | 5 | CodeMirror | Lua editor on demand; textarea fallback | `loadCM` |
 | 6 | Cell DOM | Render/edit/reorder cells; markdown WYSIWYG | cell render + drag-to-reorder |
-| 6b | Activity panels | Outline, Lua libs, LÖVE API ref | panel renderers |
+| 6b | Activity panels | Outline, Libraries (require()-driven, add-by-URL) | panel renderers |
 | 6c | Agent (WebLLM) | In-browser model manager + streaming chat; Sight v0 | `detectWebGPU`, `initAgent`, agent manager + chat |
 | 7 | Runtime | Build `.love`, boot via 2dengine/love.js | `RT`, `playerHTML`, `run`, `buildLoveBlob` |
 | 8 | Export | `.love` download | `exportLove` |
@@ -167,7 +167,8 @@ Coarse, per-subsystem. Status is the highest claim rung currently justified.
 | CodeMirror editor | **B** (load **browser-only**) | Lua via legacy mode; textarea fallback if CDN blocked. |
 | Cell UI / reorder | **B** | Ported drag-to-reorder from the oracle. |
 | Static analysis | **D** | luaparse AST → symbols + records-as-grid; validated in node against real luaparse. **Divergence:** oracle's Variables/Tables are *runtime*; ours are *static source*. Same UI intent, different data source. |
-| Activity panels | **B** | Outline / Lua libs / LÖVE API reference. |
+| Activity panels | **B** | Outline / Libraries. **API-reference tab removed** (a 42-entry hardcoded cheat-sheet — a curated stub not worth a slot; a real reference would ride a complete love-api dataset + editor autocomplete). |
+| Package management | **B** | Adopts the oracle's *no-curated-list* model: the Libraries panel is driven by `require()` auto-detection + manual **add-by-URL**. **Divergence (design-sanctioned, Lua≠Python):** the oracle resolves packages by *name* via micropip/PyPI; Lua has no in-browser resolver (no LuaRocks), so LoveIDE resolves by *URL* — single-file pure-Lua only, vendored into the `.love`. |
 | Runtime (love.js) | **browser-only** | Boots when served cross-origin-isolated; `<base href>` fix landed and user-confirmed once ("It works!"). Cross-browser sweep still owed. Not exercisable in sandbox (CDN egress blocked). |
 | Console | **S → planned** | Currently a strip under the canvas; promote to a real RHS tab (TODO Step 1) — it's also the agent's Sight/witness channel. |
 | Export `.love` | **D** | JSZip build incl. main.lua + conf + assets + libs. Download path browser-only. |

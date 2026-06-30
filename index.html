@@ -370,6 +370,12 @@ body { font-family: var(--font-sans); background: var(--bg-tertiary); color: var
 .cell.flash { animation: cellflash .7s ease; }
 
 /* library + api rows */
+.lib-add { display: flex; gap: 6px; padding: 10px 12px; border-bottom: .5px solid var(--border-faint); }
+.lib-add input { flex: 1; min-width: 0; padding: 5px 8px; border: .5px solid var(--border-light); border-radius: 6px; background: var(--bg-secondary); color: var(--text-primary); font-size: 12px; outline: none; }
+.lib-add input:focus { border-color: var(--border-info); }
+.kv-row .x { flex-shrink: 0; cursor: pointer; color: var(--text-tertiary); display: flex; }
+.kv-row .x:hover { color: var(--fn-danger); }
+.x svg { width: 15px; height: 15px; }   /* remove icon (.x is only ever a remove control) */
 .kv-row { display: flex; flex-direction: column; gap: 2px; padding: 7px 12px; border-bottom: .5px solid var(--border-faint); }
 .kv-top { display: flex; align-items: center; gap: 8px; }
 .kv-name { font-family: var(--font-mono); font-size: 12px; color: var(--text-primary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -379,12 +385,6 @@ body { font-family: var(--font-sans); background: var(--bg-tertiary); color: var
 .kv-btn.added { color: var(--fn-success); border-color: transparent; background: var(--fn-success-bg); }
 .kv-btn.busy { opacity: .6; pointer-events: none; }
 .kv-btn svg { width: 12px; height: 12px; }
-.api-group { font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-tertiary); padding: 8px 12px 3px; position: sticky; top: 0; background: var(--bg-primary); }
-.api-row { display: flex; align-items: center; gap: 6px; padding: 4px 12px; cursor: pointer; font-family: var(--font-mono); font-size: 11.5px; color: var(--text-secondary); }
-.api-row:hover { background: var(--bg-secondary); color: var(--text-primary); }
-.api-row .sig { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.api-row .ins { opacity: 0; color: var(--text-tertiary); display: flex; }
-.api-row:hover .ins { opacity: 1; }
 
 /* Variables panel (ported from the oracle's var-list) */
 .pane-note { font-size: 10px; color: var(--text-tertiary); font-style: italic; padding: 6px 12px; }
@@ -525,7 +525,6 @@ input[type=file] { display: none; }
       <button class="activity-bar-btn" data-tab="outline" title="Outline" data-ico="list"></button>
       <button class="activity-bar-btn" data-tab="config" title="Configuration" data-ico="sliders"></button>
       <button class="activity-bar-btn" data-tab="libs" title="Libraries" data-ico="package"></button>
-      <button class="activity-bar-btn" data-tab="api" title="LÖVE API" data-ico="book"></button>
       <button class="activity-bar-btn" data-tab="assistant" title="AI assistant" data-ico="message-code"></button>
       <button class="activity-bar-btn" data-tab="history" title="History" data-ico="history"></button>
       <button class="activity-bar-btn act-bottom" data-tab="settings" title="Settings" data-ico="settings"></button>
@@ -542,14 +541,8 @@ input[type=file] { display: none; }
         <div id="outline-list" style="flex:1;overflow-y:auto"></div>
       </div>
       <div class="pane-panel" id="panel-libs" data-tab="libs">
-        <div class="pane-header">Lua libraries</div>
-        <div style="padding:8px 12px;color:var(--text-tertiary);font-size:11px;line-height:1.5">Added libraries are vendored into the <code>.love</code> at <code>lib/</code>. Use e.g. <code>local bump = require('lib.bump')</code>.</div>
+        <div class="pane-header">Libraries</div>
         <div id="lib-list" style="flex:1;overflow-y:auto"></div>
-      </div>
-      <div class="pane-panel" id="panel-api" data-tab="api">
-        <div class="pane-header">LÖVE API</div>
-        <div style="padding:8px 12px"><input id="api-search" placeholder="Search love.* …" style="width:100%;padding:5px 8px;border:.5px solid var(--border-light);border-radius:6px;background:var(--bg-secondary);color:var(--text-primary);font-size:12px;outline:none"></div>
-        <div id="api-list" style="flex:1;overflow-y:auto"></div>
       </div>
       <div class="pane-panel" id="panel-assistant" data-tab="assistant">
         <div class="pane-header">AI assistant</div>
@@ -696,7 +689,6 @@ const I = {
   'dot':'<path d="M12 12m-4 0a4 4 0 1 0 8 0a4 4 0 1 0 -8 0" />',  // tabler point
   'list':'<path d="M9 6l11 0" /><path d="M9 12l11 0" /><path d="M9 18l11 0" /><path d="M5 6l0 .01" /><path d="M5 12l0 .01" /><path d="M5 18l0 .01" />',  // tabler list
   'package':'<path d="M12 3l8 4.5l0 9l-8 4.5l-8 -4.5l0 -9l8 -4.5" /><path d="M12 12l8 -4.5" /><path d="M12 12l0 9" /><path d="M12 12l-8 -4.5" /><path d="M16 5.25l-8 4.5" />',  // tabler package
-  'book':'<path d="M3 19a9 9 0 0 1 9 0a9 9 0 0 1 9 0" /><path d="M3 6a9 9 0 0 1 9 0a9 9 0 0 1 9 0" /><path d="M3 6l0 13" /><path d="M12 6l0 13" /><path d="M21 6l0 13" />',  // tabler book
   'spark':'<path d="M16 18a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2zm0 -12a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2zm-7 12a6 6 0 0 1 6 -6a6 6 0 0 1 -6 -6a6 6 0 0 1 -6 6a6 6 0 0 1 6 6z" />',  // tabler sparkles
   'search':'<path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0" /><path d="M21 21l-6 -6" />',  // tabler search
   'insert':'<path d="M12 5l0 14" /><path d="M5 12l14 0" />',  // tabler plus
@@ -1411,6 +1403,8 @@ function updateCellTitle(cellEl, cell){
 let _outlineTimer=null;
 function renderOutlineSoon(){ clearTimeout(_outlineTimer); _outlineTimer=setTimeout(()=>{
   renderOutline();
+  // Refresh library require()-detection while the panel is open (unless typing in it).
+  const lp=$('#panel-libs'); if(lp && lp.classList.contains('active') && !(document.activeElement && lp.contains(document.activeElement))) renderLibs();
   if (PANES.right && !PANES.right.isCollapsed()){
     if ($('#rpanel-variables') && $('#rpanel-variables').classList.contains('active')) renderVariablesTab();
     if ($('#rpanel-tables') && $('#rpanel-tables').classList.contains('active')) renderTablesTab();
@@ -1822,121 +1816,66 @@ async function renderTablesTab(){
   });
 }
 
-/* ── Lua libraries — curated single-file LÖVE libs, vendored into the .love ── */
-const LIB_REGISTRY = [
-  { id:'bump',     name:'bump.lua',       desc:'AABB collision detection',          url:'https://cdn.jsdelivr.net/gh/kikito/bump.lua/bump.lua' },
-  { id:'anim8',    name:'anim8',          desc:'Sprite-sheet animation',            url:'https://cdn.jsdelivr.net/gh/kikito/anim8/anim8.lua' },
-  { id:'tween',    name:'tween.lua',      desc:'Tweening / easing',                 url:'https://cdn.jsdelivr.net/gh/kikito/tween.lua/tween.lua' },
-  { id:'flux',     name:'flux',           desc:'Fast, lightweight tweening',        url:'https://cdn.jsdelivr.net/gh/rxi/flux/flux.lua' },
-  { id:'classic',  name:'classic',        desc:'Tiny OOP / classes',                url:'https://cdn.jsdelivr.net/gh/rxi/classic/classic.lua' },
-  { id:'lume',     name:'lume',           desc:'General-purpose utilities',         url:'https://cdn.jsdelivr.net/gh/rxi/lume/lume.lua' },
-  { id:'json',     name:'json.lua',       desc:'JSON encode / decode',              url:'https://cdn.jsdelivr.net/gh/rxi/json.lua/json.lua' },
-  { id:'baton',    name:'baton',          desc:'Input (keyboard + gamepad)',        url:'https://cdn.jsdelivr.net/gh/tesselode/baton/baton.lua' },
-  { id:'vector',   name:'hump.vector',    desc:'2D vector math (HUMP)',             url:'https://cdn.jsdelivr.net/gh/vrld/hump/vector.lua', path:'lib/vector.lua' },
-  { id:'timer',    name:'hump.timer',     desc:'Timers & tweens (HUMP)',            url:'https://cdn.jsdelivr.net/gh/vrld/hump/timer.lua', path:'lib/timer.lua' },
-  { id:'camera',   name:'hump.camera',    desc:'2D camera (HUMP)',                  url:'https://cdn.jsdelivr.net/gh/vrld/hump/camera.lua', path:'lib/camera.lua' },
-  { id:'gamestate',name:'hump.gamestate', desc:'Game-state stack (HUMP)',           url:'https://cdn.jsdelivr.net/gh/vrld/hump/gamestate.lua', path:'lib/gamestate.lua' },
-];
-function libPath(e){ return e.path || ('lib/'+e.id+'.lua'); }
-function libRequire(e){ return libPath(e).replace(/^/,'').replace(/\.lua$/,'').replace(/\//g,'.'); }
+/* ── Libraries — no curated list (like the oracle's package panel). The view is
+ *    driven by the require() calls in your code (auto-detected); you add any
+ *    single-file, pure-Lua library by URL. Lua has no in-browser resolver (no
+ *    micropip/LuaRocks), so it's add-by-URL, not by name. Added libs are vendored
+ *    into the .love at the project root, so `require("name")` resolves. ── */
+function detectRequires(){
+  const src=serialize(nb.doc); const names=new Set(); let m;
+  const re=/\brequire\s*\(?\s*["']([^"'\n]+)["']/g;   // require("x") or require "x" (regex; catches comments/strings too)
+  while(m=re.exec(src)) names.add(m[1]);
+  return [...names];
+}
 function readLibs(){ return nb.libs; }
 function writeLibs(l){ nb.libs = l; idbPut('libs', { id:'list', rows: nb.libs }); renderLibs(); }
+function removeLib(name){ writeLibs(readLibs().filter(l=>l.name!==name)); }
+// Fetch a single .lua file and vendor it under <name>.lua (root) → require("name").
+async function addLibByUrl(url, btn){
+  url=(url||'').trim(); if(!url) return;
+  if(!/^https?:\/\//i.test(url)){ toast('Enter a full http(s) URL to a .lua file'); return; }
+  const name=((url.split(/[?#]/)[0].split('/').pop())||'lib').replace(/\.lua$/i,'').replace(/[^\w.-]/g,'')||'lib';
+  if(readLibs().some(l=>l.name===name)){ toast(name+' is already added'); return; }
+  if(btn) btn.classList.add('busy');
+  try {
+    const res=await fetch(url); if(!res.ok) throw new Error('HTTP '+res.status);
+    const code=await res.text();
+    const libs=readLibs(); libs.push({ name, path:name+'.lua', url, code }); writeLibs(libs);
+    toast(name+' added ('+fmtBytes(code.length)+') — require("'+name+'")');
+  } catch(e){ if(btn) btn.classList.remove('busy'); toast('Failed to add: '+(e.message||e)); }
+}
 function renderLibs(){
   const wrap=$('#lib-list'); if(!wrap) return; wrap.innerHTML='';
-  const installed=new Set(readLibs().map(l=>l.id));
-  LIB_REGISTRY.forEach(e=>{
-    const added=installed.has(e.id);
-    const btn=elem('button',{class:'kv-btn'+(added?' added':''),html:added?(svg('check')+'Added'):(svg('plus')+'Add')});
-    btn.onclick=()=> added ? removeLib(e.id) : addLib(e, btn);
-    const row=elem('div',{class:'kv-row'},[
-      elem('div',{class:'kv-top'},[ elem('span',{class:'kv-name',text:e.name}), btn ]),
-      elem('div',{class:'kv-desc',text:e.desc+'  ·  require("'+libRequire(e)+'")'}),
-    ]);
-    wrap.appendChild(row);
-  });
-}
-async function addLib(e, btn){
-  if (btn){ btn.classList.add('busy'); btn.innerHTML=svg('package')+'…'; }
-  try {
-    const res=await fetch(e.url);
-    if(!res.ok) throw new Error('HTTP '+res.status);
-    const code=await res.text();
-    const libs=readLibs();
-    if(!libs.find(l=>l.id===e.id)){ libs.push({ id:e.id, name:e.name, path:libPath(e), code }); writeLibs(libs); }
-    toast(e.name+' added ('+fmtBytes(code.length)+')');
-  } catch(err){ if(btn) btn.classList.remove('busy'); renderLibs(); toast('Failed to add '+e.name+': '+(err.message||err)); }
-}
-function removeLib(id){ writeLibs(readLibs().filter(l=>l.id!==id)); }
+  const libs=readLibs();
+  const required=new Set(detectRequires());
+  const have=new Set(libs.map(l=>l.name));
 
-/* ── LÖVE API reference — curated, click-to-insert at the cursor ── */
-const API_DATA = [
-  ['graphics','love.graphics.rectangle',"(mode, x, y, w, h)","love.graphics.rectangle('fill', x, y, w, h)"],
-  ['graphics','love.graphics.circle',"(mode, x, y, radius)","love.graphics.circle('fill', x, y, r)"],
-  ['graphics','love.graphics.line',"(x1, y1, x2, y2, ...)","love.graphics.line(x1, y1, x2, y2)"],
-  ['graphics','love.graphics.polygon',"(mode, vertices)","love.graphics.polygon('fill', x1,y1, x2,y2, x3,y3)"],
-  ['graphics','love.graphics.print',"(text, x, y, r, sx, sy)","love.graphics.print(text, x, y)"],
-  ['graphics','love.graphics.printf',"(text, x, y, limit, align)","love.graphics.printf(text, x, y, limit, 'center')"],
-  ['graphics','love.graphics.setColor',"(r, g, b, a)","love.graphics.setColor(1, 1, 1, 1)"],
-  ['graphics','love.graphics.clear',"(r, g, b, a)","love.graphics.clear(0.1, 0.1, 0.1)"],
-  ['graphics','love.graphics.draw',"(drawable, x, y, r, sx, sy, ox, oy)","love.graphics.draw(image, x, y)"],
-  ['graphics','love.graphics.newImage',"(filename) -> Image","local img = love.graphics.newImage('sprite.png')"],
-  ['graphics','love.graphics.newFont',"(filename, size) -> Font","local font = love.graphics.newFont(14)"],
-  ['graphics','love.graphics.setFont',"(font)","love.graphics.setFont(font)"],
-  ['graphics','love.graphics.newQuad',"(x, y, w, h, sw, sh) -> Quad","local q = love.graphics.newQuad(0, 0, 16, 16, image:getWidth(), image:getHeight())"],
-  ['graphics','love.graphics.push',"()","love.graphics.push()"],
-  ['graphics','love.graphics.pop',"()","love.graphics.pop()"],
-  ['graphics','love.graphics.translate',"(dx, dy)","love.graphics.translate(dx, dy)"],
-  ['graphics','love.graphics.rotate',"(angle)","love.graphics.rotate(angle)"],
-  ['graphics','love.graphics.scale',"(sx, sy)","love.graphics.scale(sx, sy)"],
-  ['graphics','love.graphics.getWidth',"() -> w","local w = love.graphics.getWidth()"],
-  ['graphics','love.graphics.getHeight',"() -> h","local h = love.graphics.getHeight()"],
-  ['callbacks','love.load',"()","function love.load()\n  \nend"],
-  ['callbacks','love.update',"(dt)","function love.update(dt)\n  \nend"],
-  ['callbacks','love.draw',"()","function love.draw()\n  \nend"],
-  ['callbacks','love.keypressed',"(key, scancode, isrepeat)","function love.keypressed(key)\n  \nend"],
-  ['callbacks','love.keyreleased',"(key)","function love.keyreleased(key)\n  \nend"],
-  ['callbacks','love.mousepressed',"(x, y, button)","function love.mousepressed(x, y, button)\n  \nend"],
-  ['callbacks','love.mousemoved',"(x, y, dx, dy)","function love.mousemoved(x, y, dx, dy)\n  \nend"],
-  ['callbacks','love.resize',"(w, h)","function love.resize(w, h)\n  \nend"],
-  ['keyboard','love.keyboard.isDown',"(key) -> bool","love.keyboard.isDown('left')"],
-  ['mouse','love.mouse.getPosition',"() -> x, y","local mx, my = love.mouse.getPosition()"],
-  ['mouse','love.mouse.isDown',"(button) -> bool","love.mouse.isDown(1)"],
-  ['audio','love.audio.newSource',"(filename, type) -> Source","local snd = love.audio.newSource('beep.wav', 'static')"],
-  ['audio','love.audio.play',"(source)","love.audio.play(snd)"],
-  ['math','love.math.random',"(min, max) -> n","love.math.random(1, 6)"],
-  ['math','love.math.noise',"(x, y) -> n","love.math.noise(x, y)"],
-  ['timer','love.timer.getFPS',"() -> fps","love.timer.getFPS()"],
-  ['timer','love.timer.getTime',"() -> seconds","love.timer.getTime()"],
-  ['window','love.window.setTitle',"(title)","love.window.setTitle('My Game')"],
-  ['window','love.window.setMode',"(w, h, flags)","love.window.setMode(800, 600)"],
-  ['physics','love.physics.newWorld',"(gx, gy, sleep) -> World","local world = love.physics.newWorld(0, 9.81*64, true)"],
-  ['filesystem','love.filesystem.read',"(name) -> contents","local data = love.filesystem.read('save.txt')"],
-  ['filesystem','love.filesystem.write',"(name, data)","love.filesystem.write('save.txt', data)"],
-];
-function renderApi(filter){
-  const wrap=$('#api-list'); if(!wrap) return; wrap.innerHTML='';
-  const f=(filter||'').trim().toLowerCase();
-  const rows=API_DATA.filter(r=> !f || (r[1]+' '+r[2]).toLowerCase().includes(f));
-  if(!rows.length){ wrap.appendChild(elem('div',{class:'pane-empty',text:'No matches'})); return; }
-  let lastGroup=null;
-  rows.forEach(r=>{
-    if(r[0]!==lastGroup){ lastGroup=r[0]; wrap.appendChild(elem('div',{class:'api-group',text:r[0]})); }
-    const row=elem('div',{class:'api-row',title:'Insert: '+r[3]},[
-      elem('span',{class:'sig',html:'<b style="color:var(--type-lua-fg);font-weight:600">'+escapeHtml(r[1])+'</b> '+escapeHtml(r[2])}),
-      elem('span',{class:'ins',html:svg('insert')}),
-    ]);
-    row.onclick=()=>{ if(insertSnippet(r[3])) toast('Inserted'); };
-    wrap.appendChild(row);
+  const add=elem('div',{class:'lib-add'});
+  const inp=elem('input',{type:'text',placeholder:'Add a library — paste a .lua URL'});
+  const btn=elem('button',{class:'kv-btn',html:svg('plus')+'Add'});
+  const go=()=>{ const u=inp.value.trim(); if(u){ inp.value=''; addLibByUrl(u, btn); } };
+  btn.onclick=go; inp.addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); go(); } });
+  add.appendChild(inp); add.appendChild(btn); wrap.appendChild(add);
+  wrap.appendChild(elem('div',{class:'pane-note',text:'Raw GitHub / jsdelivr / CDN URLs work best — other hosts may be blocked by CORS.'}));
+
+  // Added libraries, tagged in-use/unused from the require scan.
+  libs.forEach(l=>{
+    const rm=elem('span',{class:'x',title:'Remove',html:svg('trash')}); rm.onclick=()=>removeLib(l.name);
+    wrap.appendChild(elem('div',{class:'kv-row'},[
+      elem('div',{class:'kv-top'},[ elem('span',{class:'kv-name',text:l.name}), elem('span',{class:'var-type',text:required.has(l.name)?'in use':'unused'}), rm ]),
+      elem('div',{class:'kv-desc',text:'require("'+l.name+'")  ·  '+fmtBytes((l.code||'').length)}),
+    ]));
   });
-}
-function insertSnippet(text){
-  const id=nb.editor.lastFocus;
-  const view=id!=null && nb.editor.views.get(id);
-  if(view){ const sel=view.state.selection.main; view.dispatch({ changes:{from:sel.from,to:sel.to,insert:text}, selection:{anchor:sel.from+text.length} }); view.focus(); setDirty(true); saveSoon(); return true; }
-  const ta=id!=null && $(`.cell[data-id="${id}"] textarea`);
-  if(ta){ const s=ta.selectionStart,e=ta.selectionEnd; ta.value=ta.value.slice(0,s)+text+ta.value.slice(e); ta.selectionStart=ta.selectionEnd=s+text.length; ta.dispatchEvent(new Event('input')); ta.focus(); return true; }
-  if(navigator.clipboard) navigator.clipboard.writeText(text);
-  toast('Copied (focus a Lua cell to insert)'); return false;
+
+  // Detected in code but not added → a guaranteed runtime error; prompt to add.
+  [...required].filter(n=>!have.has(n)).forEach(n=>{
+    wrap.appendChild(elem('div',{class:'kv-row'},[
+      elem('div',{class:'kv-top'},[ elem('span',{class:'kv-name',text:n}), elem('span',{class:'var-type',style:'color:var(--fn-danger);background:var(--fn-danger-bg)',text:'missing'}) ]),
+      elem('div',{class:'kv-desc',text:'require("'+n+'") isn’t added — paste its .lua URL above'}),
+    ]));
+  });
+
+  if(!libs.length && !required.size) wrap.appendChild(elem('div',{class:'pane-note',text:'No libraries. Add one by URL above, or require() one in your code.'}));
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -2382,6 +2321,7 @@ function wireActivityBars(){
         if (PANES.left.isCollapsed()) PANES.left.expand();
         lsSet('loveide:leftTab',tab);
         if (tab==='settings'){ renderStorage(); renderAgentGPU(); renderAgentLocal(); if(!agent.installedChecked && agent.gpu && agent.gpu.supported) agentRefreshInstalled(); }
+        if (tab==='libs') renderLibs();   // refresh require()-detection on open
         if (tab==='assistant') renderAgentTab();
       }
     };
@@ -2442,7 +2382,6 @@ function wire(){
   $('#asset-input').onchange=e=>{ addAssets(e.target.files); e.target.value=''; };
   $('#snap-now').onclick=()=>{ saveDoc(true); toast('Snapshot saved'); };
   $('#snap-clear').onclick=()=>{ if(confirm('Clear all snapshots?')){ nb.history=[]; persistHistory(); renderHistory(); renderStorage(); toast('Snapshots cleared'); } };
-  $('#api-search').oninput=e=>renderApi(e.target.value);
   $('#toggle-console').onclick=()=>showConsole();
   $('#st-agent').onclick=()=>openTab('assistant');
   $$('#seg-mode button').forEach(b=>b.onclick=()=>{ const t=getTheme(); t.mode=b.dataset.mode; setTheme(t); });
@@ -2472,7 +2411,6 @@ async function boot(){
   renderHistory();
   renderOutline();
   renderLibs();
-  renderApi('');
   renderConf();
   renderStorage();
   initAgent();
