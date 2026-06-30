@@ -328,6 +328,10 @@ body { font-family: var(--font-sans); background: var(--bg-tertiary); color: var
 .conf-field { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-tertiary); flex: 1; }
 .conf-field input { padding: 5px 8px; border: .5px solid var(--border-light); border-radius: 6px; background: var(--bg-secondary); color: var(--text-primary); font-size: 12px; font-family: var(--font-mono); outline: none; width: 100%; }
 .conf-field input:focus { border-color: var(--border-info); }
+.conf-field select { padding: 5px 8px; border: .5px solid var(--border-light); border-radius: 6px; background: var(--bg-secondary); color: var(--text-primary); font-size: 12px; outline: none; width: 100%; cursor: pointer; }
+.conf-note { font-size: 11px; color: var(--text-tertiary); line-height: 1.5; }
+.conf-modules { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 16px; margin-top: 4px; }
+.conf-modules .setting-toggle { text-transform: capitalize; }
 
 /* Storage meter */
 .storage-bar { height: 5px; background: var(--bg-tertiary); border-radius: 99px; overflow: hidden; margin: 4px 0 8px; }
@@ -519,7 +523,7 @@ input[type=file] { display: none; }
     <div id="left-activity-bar" class="activity-bar">
       <button class="activity-bar-btn active" data-tab="assets" title="Assets" data-ico="assets"></button>
       <button class="activity-bar-btn" data-tab="outline" title="Outline" data-ico="list"></button>
-      <button class="activity-bar-btn" data-tab="config" title="Config · conf.lua" data-ico="sliders"></button>
+      <button class="activity-bar-btn" data-tab="config" title="Configuration" data-ico="sliders"></button>
       <button class="activity-bar-btn" data-tab="libs" title="Libraries" data-ico="package"></button>
       <button class="activity-bar-btn" data-tab="api" title="LÖVE API" data-ico="book"></button>
       <button class="activity-bar-btn" data-tab="assistant" title="AI assistant" data-ico="message-code"></button>
@@ -599,21 +603,9 @@ input[type=file] { display: none; }
         </div>
       </div>
       <div class="pane-panel" id="panel-config" data-tab="config">
-        <div class="pane-header">Config · conf.lua</div>
+        <div class="pane-header">Configuration</div>
         <div class="settings-body">
-          <div style="font-size:11px;color:var(--text-tertiary);line-height:1.5">Your game's <code>conf.lua</code> — window and project settings. Generated into the <code>.love</code> on Run and Export.</div>
-          <div class="conf-grid">
-            <label class="conf-field"><span>Window title</span><input id="conf-title" type="text" placeholder="Untitled"></label>
-            <label class="conf-field"><span>Identity (save folder)</span><input id="conf-identity" type="text" placeholder="loveide-game"></label>
-            <div class="conf-2">
-              <label class="conf-field"><span>Width</span><input id="conf-width" type="number" min="1"></label>
-              <label class="conf-field"><span>Height</span><input id="conf-height" type="number" min="1"></label>
-            </div>
-            <label class="conf-field"><span>LÖVE version</span><input id="conf-version" type="text" placeholder="11.5"></label>
-            <label class="setting-toggle"><span>Resizable window</span><input type="checkbox" id="conf-resizable"></label>
-            <label class="setting-toggle"><span>VSync</span><input type="checkbox" id="conf-vsync"></label>
-            <label class="setting-toggle"><span>Fullscreen</span><input type="checkbox" id="conf-fullscreen"></label>
-          </div>
+          <div id="conf-body"></div>
         </div>
       </div>
     </div>
@@ -1103,26 +1095,70 @@ async function addAssets(fileList){
 }
 
 /* ── Game settings → conf.lua (generated into the .love at build) ── */
-const CONF_DEFAULTS = { title:'Untitled', identity:'loveide-game', version:'11.5', width:800, height:600, resizable:false, vsync:true, fullscreen:false };
+// conf.lua field schema — single source for the Game-settings form, defaults, and
+// codegen. group: universal (always, above the target selector) · desktop (shown
+// only when the export target includes desktop) · render / modules (advanced,
+// always shown — they affect every target). lua = the conf.lua path codegen writes.
+const CONF_FIELDS = [
+  { key:'title',    label:'Window title',           type:'text', group:'universal', lua:'window.title',  def:'Untitled' },
+  { key:'identity', label:'Identity (save folder)',  type:'text', group:'universal', lua:'identity',      def:'loveide-game' },
+  { key:'width',    label:'Width',  type:'int', group:'universal', lua:'window.width',  def:800 },
+  { key:'height',   label:'Height', type:'int', group:'universal', lua:'window.height', def:600 },
+  // Platform window/OS options. `platforms` lists which export targets show them.
+  { key:'resizable',      label:'Resizable window', type:'bool',   group:'platform', platforms:['windows','macos','linux'], lua:'window.resizable',      def:false },
+  { key:'fullscreen',     label:'Fullscreen',       type:'bool',   group:'platform', platforms:['windows','macos','linux'], lua:'window.fullscreen',     def:false },
+  { key:'fullscreentype', label:'Fullscreen type',  type:'select', group:'platform', platforms:['windows','macos','linux'], lua:'window.fullscreentype', def:'desktop', options:['desktop','exclusive'] },
+  { key:'borderless',     label:'Borderless',       type:'bool',   group:'platform', platforms:['windows','macos','linux'], lua:'window.borderless',     def:false },
+  { key:'vsync',          label:'VSync',            type:'bool',   group:'platform', platforms:['windows','macos','linux'], lua:'window.vsync',          def:true, luaVsync:true },
+  { key:'minwidth',       label:'Min width',        type:'int',    group:'platform', platforms:['windows','macos','linux'], lua:'window.minwidth',       def:1 },
+  { key:'minheight',      label:'Min height',       type:'int',    group:'platform', platforms:['windows','macos','linux'], lua:'window.minheight',      def:1 },
+  { key:'display',        label:'Monitor #',        type:'int',    group:'platform', platforms:['windows','macos','linux'], lua:'window.display',        def:1 },
+  { key:'centered',       label:'Center on screen', type:'bool',   group:'platform', platforms:['windows','macos','linux'], lua:'window.centered',       def:true },
+  { key:'console',        label:'Console window',   type:'bool',   group:'platform', platforms:['windows'],                 lua:'console',               def:false },
+  // Mobile options.
+  { key:'accelerometerjoystick', label:'Accelerometer as joystick', type:'bool', group:'platform', platforms:['android','ios'], lua:'accelerometerjoystick', def:true },
+  { key:'externalstorage',       label:'External storage',          type:'bool', group:'platform', platforms:['android'],       lua:'externalstorage',       def:false },
+  { key:'audiomic',              label:'Microphone',                type:'bool', group:'platform', platforms:['android'],       lua:'audio.mic',             def:false },
+  { key:'audiomix',              label:'Mix with system audio',     type:'bool', group:'platform', platforms:['android','ios'], lua:'audio.mixwithsystem',   def:true },
+  // Advanced · rendering (affects every target).
+  { key:'msaa',         label:'MSAA samples',  type:'int',  group:'render', lua:'window.msaa',        def:0, min:0 },
+  { key:'highdpi',      label:'High-DPI',      type:'bool', group:'render', lua:'window.highdpi',     def:false },
+  { key:'usedpiscale',  label:'Use DPI scale', type:'bool', group:'render', lua:'window.usedpiscale', def:true },
+  { key:'gammacorrect', label:'Gamma-correct', type:'bool', group:'render', lua:'gammacorrect',       def:false },
+  // Advanced · modules (enable/disable engine subsystems — every target).
+  ...['data','event','keyboard','mouse','timer','joystick','touch','image','graphics','audio','math','physics','sound','system','font','thread','window','video']
+     .map(m=>({ key:'mod_'+m, label:m, type:'bool', group:'modules', lua:'modules.'+m, def:true })),
+];
+// Single-select export targets. Drives the FORM filter (which platform options
+// show) and, later, the export format. conf.lua always carries every value.
+const CONF_TARGETS = [['web','Web'],['windows','Windows'],['macos','macOS'],['linux','Linux'],['android','Android'],['ios','iOS']];
+// version is IDE-managed (must match the runtime); target is LoveIDE metadata (not a conf.lua key).
+const CONF_DEFAULTS = Object.assign({ version:'11.5', target:'web' }, Object.fromEntries(CONF_FIELDS.map(f=>[f.key,f.def])));
 function readConf(){ return Object.assign({}, CONF_DEFAULTS, nb.conf||{}); }
 function writeConf(c){ nb.conf = Object.assign({}, c); idbPut('meta', { id:'conf', conf: nb.conf }); }
+function setConf(key,val){ const c=readConf(); c[key]=val; writeConf(c); }
 function luaStr(s){ return '"' + String(s).replace(/\\/g,'\\\\').replace(/"/g,'\\"').replace(/\n/g,'\\n') + '"'; }
 // `devHooks` appends preview-only instrumentation (see ERRHAND_HOOK). The export
 // path passes false so the shipped conf.lua is clean main.lua + conf only.
+// conf.lua carries ALL values (target only filters the FORM): core always emitted,
+// everything else only when it differs from the LÖVE default (keeps the file lean).
 function generateConfLua(devHooks){
   const c=readConf();
-  return `-- Generated by LoveIDE — edit in Settings → Game
-function love.conf(t)
-  t.identity = ${luaStr(c.identity||'loveide-game')}
-  t.version = ${luaStr(c.version||'11.5')}
-  t.window.title = ${luaStr(c.title||'Untitled')}
-  t.window.width = ${parseInt(c.width)||800}
-  t.window.height = ${parseInt(c.height)||600}
-  t.window.resizable = ${c.resizable?'true':'false'}
-  t.window.vsync = ${c.vsync?1:0}
-  t.window.fullscreen = ${c.fullscreen?'true':'false'}
-end
-${devHooks ? ERRHAND_HOOK : ''}`;
+  const fmt=(f,v)=> f.type==='bool' ? (f.luaVsync ? (v?1:0) : (v?'true':'false')) : f.type==='int' ? String(parseInt(v)||CONF_DEFAULTS[f.key]) : luaStr(v);
+  const L=[
+    `  t.identity = ${luaStr(c.identity||'loveide-game')}`,
+    `  t.version = ${luaStr('11.5')}`,
+    `  t.window.title = ${luaStr(c.title||'Untitled')}`,
+    `  t.window.width = ${parseInt(c.width)||800}`,
+    `  t.window.height = ${parseInt(c.height)||600}`,
+  ];
+  for(const f of CONF_FIELDS){
+    if(f.group==='universal') continue;            // title/identity/width/height already emitted
+    const v=c[f.key];
+    if(v==null || v===CONF_DEFAULTS[f.key]) continue;   // omit defaults
+    L.push('  t.'+f.lua+' = '+fmt(f,v));
+  }
+  return `-- Generated by LoveIDE — edit in Settings → Game\nfunction love.conf(t)\n`+L.join('\n')+`\nend\n${devHooks ? ERRHAND_HOOK : ''}`;
 }
 // Override (not wrap love.run): chain LÖVE's own error screen, but first write the
 // message to stderr so love.js maps it to console.error → the iframe→parent bridge
@@ -1140,20 +1176,62 @@ do
   love.errhand = love.errorhandler
 end
 `;
-function renderConf(){
-  const c=readConf();
-  const set=(id,v)=>{ const el=$('#'+id); if(el){ if(el.type==='checkbox') el.checked=!!v; else el.value=v; } };
-  set('conf-title',c.title); set('conf-identity',c.identity); set('conf-version',c.version);
-  set('conf-width',c.width); set('conf-height',c.height);
-  set('conf-resizable',c.resizable); set('conf-vsync',c.vsync); set('conf-fullscreen',c.fullscreen);
+// One form control for a CONF_FIELDS entry, bound to nb.conf. Text/number persist
+// on input (no re-render, to keep focus); bool/select persist on change.
+function confControl(f, c){
+  const cur=c[f.key];
+  if(f.type==='bool'){
+    const cb=elem('input',{type:'checkbox'}); cb.checked=!!cur;
+    cb.onchange=()=>setConf(f.key, cb.checked);
+    return elem('label',{class:'setting-toggle'},[ elem('span',{text:f.label}), cb ]);
+  }
+  if(f.type==='select'){
+    const sel=elem('select'); (f.options||[]).forEach(o=>{ const op=elem('option',{value:o,text:o}); if(o===cur) op.selected=true; sel.appendChild(op); });
+    sel.onchange=()=>setConf(f.key, sel.value);
+    return elem('label',{class:'conf-field'},[ elem('span',{text:f.label}), sel ]);
+  }
+  const inp=elem('input',{type:f.type==='int'?'number':'text', value:cur==null?'':cur});
+  if(f.type==='int') inp.min=String(f.min!=null?f.min:1);
+  inp.oninput=()=>setConf(f.key, f.type==='int'?(parseInt(inp.value)||CONF_DEFAULTS[f.key]):inp.value);
+  return elem('label',{class:'conf-field'},[ elem('span',{text:f.label}), inp ]);
 }
-function wireConf(){
-  const fields=[['conf-title','title','text'],['conf-identity','identity','text'],['conf-version','version','text'],['conf-width','width','int'],['conf-height','height','int'],['conf-resizable','resizable','bool'],['conf-vsync','vsync','bool'],['conf-fullscreen','fullscreen','bool']];
-  fields.forEach(([id,key,kind])=>{
-    const el=$('#'+id); if(!el) return;
-    const handler=()=>{ const c=readConf(); c[key]= kind==='bool'?el.checked : kind==='int'?(parseInt(el.value)||CONF_DEFAULTS[key]) : el.value; writeConf(c); };
-    el.addEventListener(el.type==='checkbox'?'change':'input', handler);
+function confSection(label){ return elem('div',{class:'settings-label',style:'margin-top:14px'},[ elem('span',{text:label}) ]); }
+// Build the Game-settings form: universal basics, the export-target selector, the
+// target-filtered desktop options, then the always-shown Advanced groups.
+function renderConf(){
+  const wrap=$('#conf-body'); if(!wrap) return;
+  const c=readConf();
+  let target=c.target; if(!CONF_TARGETS.some(t=>t[0]===target)) target='web';   // normalize stale/invalid
+  const label=(CONF_TARGETS.find(t=>t[0]===target)||[])[1]||'Web';
+  const fieldsIn = g => CONF_FIELDS.filter(f=>f.group===g);
+  wrap.innerHTML='';
+  wrap.appendChild(confSection('General'));
+  fieldsIn('universal').forEach(f=>wrap.appendChild(confControl(f,c)));
+
+  wrap.appendChild(confSection('Advanced · rendering'));
+  fieldsIn('render').forEach(f=>wrap.appendChild(confControl(f,c)));
+  wrap.appendChild(confSection('Advanced · modules'));
+  const grid=elem('div',{class:'conf-modules'});
+  fieldsIn('modules').forEach(f=>grid.appendChild(confControl(f,c)));
+  wrap.appendChild(grid);
+
+  // Target section last: the selector + its options. Only this part changes when
+  // the target changes, so General/Advanced above never jump around.
+  wrap.appendChild(confSection('Export target'));
+  const seg=elem('div',{class:'seg'});
+  CONF_TARGETS.forEach(([v,lbl])=>{
+    const b=elem('button',{text:lbl}); if(target===v) b.classList.add('active');
+    b.onclick=()=>{ setConf('target',v); renderConf(); };
+    seg.appendChild(b);
   });
+  wrap.appendChild(seg);
+  const platFields=fieldsIn('platform').filter(f=>f.platforms.includes(target));
+  if(platFields.length){
+    wrap.appendChild(confSection(label+' settings'));
+    platFields.forEach(f=>wrap.appendChild(confControl(f,c)));
+  } else {
+    wrap.appendChild(elem('div',{class:'conf-note',style:'margin-top:8px',text:'No '+label+'-specific settings — General and Advanced above cover this target.'}));
+  }
 }
 
 /* ── Storage meter — read-only data viz. One origin Used/Max bar (quota is a
@@ -2395,7 +2473,7 @@ async function boot(){
   renderOutline();
   renderLibs();
   renderApi('');
-  renderConf(); wireConf();
+  renderConf();
   renderStorage();
   initAgent();
   setDirty(false);

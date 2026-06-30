@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LoveIDE — Paper × Ink theme (standalone reference)</title>
+<link rel="stylesheet" href="loveide-theme.css">
+<style>
+  /* ---- App-level styles (yours; these use the theme tokens) ---------------- */
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg-tertiary); color: var(--text-primary);
+  }
+  .app { display: flex; flex-direction: column; height: 100vh; }
+
+  /* topbar — note the Run/Stop colours are HARD-CODED (theme-immune, your job) */
+  .topbar { display: flex; align-items: center; gap: 10px; height: 50px; padding: 0 16px;
+    background: var(--bg-primary); border-bottom: .5px solid var(--border-faint); }
+  .logo { font-size: 24px; font-weight: 700; }
+  .logo .love { color: #EC4899; }          /* brand — manual */
+  .logo .ide  { color: #7C8A99; }          /* brand — manual */
+  .spacer { flex: 1; }
+  .btn { display: flex; align-items: center; gap: 6px; padding: 6px 13px; font-size: 12px;
+    border-radius: 8px; border: .5px solid var(--border-light); color: var(--text-secondary);
+    background: none; cursor: pointer; }
+  .btn.stop { background: rgba(229,72,77,.13); color: #e5484d; border-color: transparent; } /* immune */
+  .btn.run  { background: #EC4899; color: #fff; border-color: transparent; font-weight: 600; } /* immune */
+
+  /* body row */
+  .row { flex: 1; display: flex; min-height: 0; }
+  .pane { width: 210px; background: var(--bg-primary); border-right: .5px solid var(--border-faint);
+    padding: 12px 14px; font-size: 12px; color: var(--text-tertiary); }
+  .pane h4 { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--text-secondary); margin-bottom: 10px; }
+  .nb { flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 14px; }
+
+  .cell { border: .5px solid var(--border-faint); border-radius: 12px; background: var(--bg-primary); overflow: hidden; }
+  .cell-head { display: flex; align-items: center; gap: 8px; padding: 6px 11px;
+    background: var(--bg-secondary); border-bottom: .5px solid var(--border-faint); }
+  .badge { font-size: 10px; font-weight: 600; padding: 3px 9px; border-radius: 99px;
+    letter-spacing: .05em; text-transform: uppercase; }
+  .badge.lua { background: color-mix(in srgb, #EC4899 15%, transparent); color: #EC4899;       /* immune */
+    border: 1px solid color-mix(in srgb, #EC4899 30%, transparent); }
+  .badge.md  { background: color-mix(in srgb, #7C8A99 24%, transparent); color: #7C8A99;       /* immune */
+    border: 1px solid color-mix(in srgb, #7C8A99 30%, transparent); }
+  .cell-title { font-size: 11px; color: var(--text-tertiary); font-family: 'Cascadia Code', monospace; }
+  pre { margin: 0; padding: 13px 16px; background: var(--bg-primary);
+    font-family: 'Cascadia Code', 'JetBrains Mono', Consolas, monospace; font-size: 13px; line-height: 1.65;
+    color: var(--text-primary); white-space: pre; overflow-x: auto; }
+  .k  { color: var(--syntax-keyword); }
+  .fn { color: var(--syntax-function); }
+  .s  { color: var(--syntax-string); }
+  .n  { color: var(--syntax-number); }
+  .o  { color: var(--syntax-operator); }
+  .prose { padding: 14px 18px; font-size: 14px; line-height: 1.7; color: var(--text-primary); }
+  .prose h1 { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
+  .prose p { color: var(--text-secondary); }
+
+  /* Appearance panel — the UI for the two axes (copy this markup) */
+  .appearance { position: fixed; right: 20px; bottom: 20px; width: 280px;
+    background: var(--bg-primary); border: .5px solid var(--border-medium); border-radius: 12px;
+    box-shadow: var(--shadow); padding: 15px; }
+  .appearance .hd { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
+  .appearance .lbl { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-tertiary); font-weight: 600; }
+  .appearance .val { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+  .appearance .val .pct { font-size: 11px; color: var(--text-tertiary); margin-left: 6px; }
+  .appearance .ends { display: flex; justify-content: space-between; margin: 8px 0 18px; font-size: 10px; color: var(--text-tertiary); }
+  .appearance .ends.last { margin-bottom: 0; }
+</style>
+</head>
+<body class="loveide-themed">
+  <div class="app loveide-fade">
+
+    <div class="topbar loveide-fade">
+      <span class="logo"><span class="love">Love</span><span class="ide">IDE</span></span>
+      <span class="spacer"></span>
+      <button class="btn stop">■ Stop</button>
+      <button class="btn run">▶ Run</button>
+    </div>
+
+    <div class="row">
+      <div class="pane loveide-fade"><h4>Assets</h4>No assets</div>
+
+      <div class="nb loveide-fade">
+        <div class="cell loveide-fade">
+          <div class="cell-head"><span class="badge md">Markdown</span><span class="cell-title"># LoveIDE</span></div>
+          <div class="prose"><h1>LoveIDE</h1><p>This prose follows the <b>Paper</b> axis (grayscale). The code below follows <b>Ink</b> (steel → pink).</p></div>
+        </div>
+
+        <div class="cell loveide-fade">
+          <div class="cell-head"><span class="badge lua">Lua</span><span class="cell-title">function love.draw()</span></div>
+<pre><span class="k">function</span> love<span class="o">.</span><span class="fn">draw</span><span class="o">()</span>
+  love<span class="o">.</span>graphics<span class="o">.</span><span class="fn">clear</span><span class="o">(</span><span class="n">0.07</span><span class="o">,</span> <span class="n">0.07</span><span class="o">,</span> <span class="n">0.07</span><span class="o">)</span>
+  love<span class="o">.</span>graphics<span class="o">.</span><span class="fn">setColor</span><span class="o">(</span><span class="n">0.85</span><span class="o">,</span> <span class="n">0.18</span><span class="o">,</span> <span class="n">0.55</span><span class="o">)</span>
+  love<span class="o">.</span>graphics<span class="o">.</span><span class="fn">circle</span><span class="o">(</span><span class="s">'fill'</span><span class="o">,</span> ball<span class="o">.</span>x<span class="o">,</span> ball<span class="o">.</span>y<span class="o">,</span> ball<span class="o">.</span>r<span class="o">)</span>
+  love<span class="o">.</span>graphics<span class="o">.</span><span class="fn">print</span><span class="o">(</span><span class="s">'LoveIDE  '</span> <span class="o">..</span> string<span class="o">.</span><span class="fn">format</span><span class="o">(</span><span class="s">'%.1f'</span><span class="o">,</span> t<span class="o">)</span><span class="o">,</span> <span class="n">10</span><span class="o">,</span> <span class="n">10</span><span class="o">)</span>
+<span class="k">end</span></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Appearance panel: two sliders = the whole theme -->
+  <div class="appearance loveide-fade">
+    <div class="hd">
+      <span class="lbl">Paper</span>
+      <span class="val"><span id="paper-level">Midday</span><span class="pct" id="paper-pct">12%</span></span>
+    </div>
+    <input id="paper" class="nd-range" type="range" min="0" max="1" step="0.01">
+    <div class="ends"><span>Light</span><span>Dark</span></div>
+
+    <div class="lbl">Ink</div>
+    <input id="ink" class="nd-range nd-wc" type="range" min="0" max="1" step="0.01">
+    <div class="ends last"><span>Steel</span><span>Pink</span></div>
+  </div>
+
+  <script src="loveide-theme.js"></script>
+  <script>
+    // The entire wiring: point init() at the two sliders + readouts.
+    LoveIDETheme.init({
+      paperSlider: '#paper',
+      inkSlider:   '#ink',
+      levelEl:     '#paper-level',
+      pctEl:       '#paper-pct'
+      // root: document.documentElement (default) · storageKey: 'loveide:appearance' (default)
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,80 @@
+/* ============================================================================
+ * loveide-theme.css — companion styles for loveide-theme.js
+ * ----------------------------------------------------------------------------
+ * Three things the JS can't do inline:
+ *   1. @property registrations — make the theme tokens ANIMATABLE <color>s so a
+ *      slider drag cross-fades smoothly instead of snapping. (Pair with a
+ *      `transition` on whatever paints them — see §3.)
+ *   2. The fog text-halo — a dual light/dark ring on every glyph, driven by the
+ *      --ink-halo-* variables; ~invisible except in the Paper "Fog/Gloom" band.
+ *   3. The two range-slider skins (Paper greyscale track, Ink steel→pink track).
+ * ==========================================================================*/
+
+/* ── 1. Registered, animatable theme tokens ──────────────────────────────── */
+@property --bg-primary       { syntax: '<color>'; inherits: true; initial-value: #ffffff; }
+@property --bg-secondary     { syntax: '<color>'; inherits: true; initial-value: #f3f1ee; }
+@property --bg-tertiary      { syntax: '<color>'; inherits: true; initial-value: #e8e4df; }
+@property --bg-info          { syntax: '<color>'; inherits: true; initial-value: #edeae5; }
+@property --text-primary     { syntax: '<color>'; inherits: true; initial-value: #2a2622; }
+@property --text-secondary   { syntax: '<color>'; inherits: true; initial-value: #6c655d; }
+@property --text-tertiary    { syntax: '<color>'; inherits: true; initial-value: #9a9289; }
+@property --border-faint     { syntax: '<color>'; inherits: true; initial-value: rgba(44,44,44,.10); }
+@property --border-light     { syntax: '<color>'; inherits: true; initial-value: rgba(44,44,44,.18); }
+@property --border-medium    { syntax: '<color>'; inherits: true; initial-value: rgba(44,44,44,.30); }
+@property --border-info      { syntax: '<color>'; inherits: true; initial-value: #8a8a8a; }
+@property --syntax-keyword   { syntax: '<color>'; inherits: true; initial-value: #b6418a; }
+@property --syntax-number    { syntax: '<color>'; inherits: true; initial-value: #c14b5f; }
+@property --syntax-function  { syntax: '<color>'; inherits: true; initial-value: #bb4f87; }
+@property --syntax-string    { syntax: '<color>'; inherits: true; initial-value: #c25741; }
+@property --syntax-operator  { syntax: '<color>'; inherits: true; initial-value: #b15080; }
+
+/* ── 2. Fog text-halo ─────────────────────────────────────────────────────
+ * Put the `loveide-themed` class on whatever wraps your themed UI (e.g. <body>
+ * or #app). The halo inherits to all descendant text; its alpha is 0 except in
+ * the foggy middle of the Paper slider, so normal positions render crisp. */
+.loveide-themed {
+  text-shadow:
+    0 0 2px var(--ink-halo-l, transparent),
+    0 0 1px var(--ink-halo-d, transparent),
+    0 0 1px var(--ink-halo-d, transparent),
+    0 0 3px var(--ink-halo-d, transparent);
+}
+
+/* ── 3. Smooth cross-fade on theme change (optional but recommended) ───────
+ * Because the tokens above are registered <color>s, transitioning the
+ * properties that USE them animates the colour. Add to your surfaces/text. */
+.loveide-fade {
+  transition: background-color .35s ease, color .35s ease, border-color .35s ease;
+}
+@media print { * { transition: none !important; } }
+
+/* ── 4. Slider skins ──────────────────────────────────────────────────────
+ * Two <input type="range" min="0" max="1" step="0.01">. .nd-range = Paper
+ * (greyscale track). Add .nd-wc for Ink (steel→pink track). */
+.nd-range {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 20px; margin: 0; background: transparent; outline: none; cursor: pointer;
+}
+.nd-range::-webkit-slider-runnable-track {
+  height: 7px; border-radius: 6px; border: 1px solid var(--border-light);
+  background: linear-gradient(90deg, #fbfaf9, #cfcdca 38%, #807e7b 60%, #3a3937 82%, #191817);
+}
+.nd-range::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 17px; height: 17px; border-radius: 50%; margin-top: -6px; cursor: pointer;
+  background: var(--bg-primary); border: 2px solid #EC4899; box-shadow: 0 1px 4px rgba(0,0,0,.35);
+}
+.nd-range::-moz-range-track {
+  height: 7px; border-radius: 6px; border: 1px solid var(--border-light);
+  background: linear-gradient(90deg, #fbfaf9, #cfcdca 38%, #807e7b 60%, #3a3937 82%, #191817);
+}
+.nd-range::-moz-range-thumb {
+  width: 15px; height: 15px; border-radius: 50%; cursor: pointer;
+  background: var(--bg-primary); border: 2px solid #EC4899; box-shadow: 0 1px 4px rgba(0,0,0,.35);
+}
+.nd-wc::-webkit-slider-runnable-track {
+  background: linear-gradient(90deg, oklch(0.61 0.018 248), oklch(0.58 0.06 352), oklch(0.63 0.175 351));
+}
+.nd-wc::-moz-range-track {
+  background: linear-gradient(90deg, oklch(0.61 0.018 248), oklch(0.58 0.06 352), oklch(0.63 0.175 351));
+}
