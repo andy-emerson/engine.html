@@ -54,9 +54,20 @@ understatement: report what you saw, name what you couldn't test.
 - External libs load **from CDN, lazily, with an offline/degraded fallback**
   (textarea instead of CodeMirror, built-in markdown instead of marked, etc.).
   Never hard-fail the app because a CDN is unreachable.
-- State persists in `localStorage` (doc, history, conf, theme, opts) and
-  **IndexedDB** (binary assets — Blobs, not base64). Don't reintroduce base64
-  asset storage.
+- **Storage tiers — pick by the data's nature, not by habit:**
+  - `localStorage` = **tiny, disposable app preferences only** (theme, opts, tab
+    state). It's the only store read synchronously at boot (no theme-flash), but
+    it's ~5 MB and silently fails when full — never put project data here.
+  - **IndexedDB** = **all project data**: `main.lua`, snapshots, libraries, conf
+    (meta), binary assets (Blobs, not base64 — don't reintroduce base64), and
+    encrypted secrets. Loaded into memory once at boot (`loadAll`), reads stay
+    synchronous from `nb.*`, writes persist back async. Separate object store per
+    concern.
+  - **Cache API** = **regenerable downloads** (WebLLM model weights, love.js
+    wasm/CDN). Never hand-persisted; owned by their loaders.
+  - **Secrets** = AES-GCM encrypted under a **non-extractable device key** kept in
+    IndexedDB (raw bytes never exposed to JS); ciphertext in IndexedDB. Ported
+    from the oracle. Device-bound (no cross-device sync); lose the key, re-enter.
 - The runtime is a **fresh iframe per run** so love.js gets a clean Module.
 
 ## Code readability standard (applies to index.html)

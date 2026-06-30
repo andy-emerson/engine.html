@@ -319,10 +319,13 @@ body { font-family: var(--font-sans); background: var(--bg-tertiary); color: var
 .storage-row .clr:hover { border-color: var(--fn-danger); color: var(--fn-danger); }
 .storage-total { font-size: 11px; color: var(--text-tertiary); display: flex; justify-content: space-between; }
 .storage-total b { color: var(--text-primary); font-family: var(--font-mono); font-weight: 600; }
-.storage-section { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-tertiary); margin: 10px 0 2px; }
-.storage-note { font-size: 10px; color: var(--text-tertiary); margin: 2px 0 6px; line-height: 1.4; }
-.storage-warn { font-size: 11px; color: var(--fn-danger); background: var(--fn-danger-bg); border-radius: 5px; padding: 5px 8px; margin: 4px 0; line-height: 1.4; }
-.storage-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; align-items: center; }
+.storage-group { display: flex; align-items: center; gap: 8px; font-size: 11px; font-weight: 600; color: var(--text-secondary); padding: 8px 0 1px; margin-top: 6px; }
+.storage-group .grow { flex: 1; }
+.storage-group .val { color: var(--text-primary); font-family: var(--font-mono); }
+.storage-row.indent { padding-left: 12px; color: var(--text-tertiary); }
+.storage-foot { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--text-primary); padding: 7px 0 2px; margin-top: 6px; border-top: 1px solid var(--border-light); }
+.storage-foot .grow { flex: 1; }
+.storage-foot .val { font-family: var(--font-mono); }
 
 /* activity bar: push a button to the bottom (Settings) */
 .act-bottom { margin-top: auto; }
@@ -357,8 +360,10 @@ body { font-family: var(--font-sans); background: var(--bg-tertiary); color: var
 .var-section .chev { transition: transform .15s; }
 .var-section.collapsed .chev { transform: rotate(-90deg); }
 .var-section .count { margin-left: auto; font-weight: 400; }
-.var-row { padding: 5px 12px; cursor: pointer; border-bottom: .5px solid var(--border-faint); }
+.var-row { padding: 5px 12px; border-bottom: .5px solid var(--border-faint); }
 .var-row:hover { background: var(--bg-secondary); }
+.var-fn { font-family: var(--font-mono); text-transform: none; letter-spacing: 0; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.var-empty { padding: 5px 12px 7px 22px; font-size: 11px; font-style: italic; color: var(--text-tertiary); }
 .var-row-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .var-name { font-family: var(--font-mono); font-size: 12px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .var-type { font-size: 10px; font-family: var(--font-sans); padding: 1px 5px; border-radius: 3px; background: var(--bg-tertiary); color: var(--text-tertiary); flex-shrink: 0; white-space: nowrap; }
@@ -864,7 +869,7 @@ function refreshMarkdownCells(){
  * ════════════════════════════════════════════════════════════════════════════ */
 // Persistence keys (origin-scoped localStorage). The `loveide:` prefix is a
 // stable namespace, decoupled from the filename so a rename can't strand state.
-const LS = { doc:'loveide:main.lua', hist:'loveide:history', assets:'loveide:assets', theme:'loveide:theme', opts:'loveide:opts' };
+const LS = { theme:'loveide:theme', opts:'loveide:opts' };  // localStorage = tiny app prefs ONLY; all project data lives in IndexedDB (see §3 idb layer)
 const SEED = `--[[
 # LoveIDE
 
@@ -899,6 +904,9 @@ end
 
 const nb = {
   doc: { cells: [], trailing: '' },
+  history: [],            // snapshots (IndexedDB-backed; cached in memory)
+  libs: [],               // libraries (IndexedDB-backed)
+  conf: null,             // conf.lua settings (IndexedDB-backed; null until loadAll)
   dirty: false,
   opts: { lineNumbers: false },
   editor: { cm: null, views: new Map(), focusNew: new Set() },
@@ -906,13 +914,23 @@ const nb = {
 };
 
 function lsGet(k,d){ try { const v=localStorage.getItem(k); return v==null?d:v; } catch(e){ return d; } }
-let _lsFull=false, _lsWarnAt=0;
-function lsSet(k,v){ try { localStorage.setItem(k,v); _lsFull=false; } catch(e){ _lsFull=true; const t=Date.now(); if(t-_lsWarnAt>8000){ _lsWarnAt=t; try{ toast('Storage full — saves are failing. Free space in Settings → Storage.'); }catch(_){} } } }
+function lsSet(k,v){ try { localStorage.setItem(k,v); } catch(e){} }
 
-function loadDoc(){ nb.doc = parse(lsGet(LS.doc, SEED)); }
+// Load all project data from IndexedDB into memory once at boot. Reads then stay
+// synchronous (from nb.*); writes persist back asynchronously (fire-and-forget).
+async function loadAll(){
+  const [docRec, snapRec, libRec, metaRec] = await Promise.all([
+    idbGet('doc','current'), idbGet('snapshots','list'), idbGet('libs','list'), idbGet('meta','conf'),
+  ]);
+  nb.doc     = parse(docRec ? docRec.src : SEED);
+  nb.history = (snapRec && snapRec.rows) || [];
+  nb.libs    = (libRec && libRec.rows) || [];
+  nb.conf    = Object.assign({}, CONF_DEFAULTS, (metaRec && metaRec.conf) || {});
+  try { await loadSecrets(); } catch(e){ console.error('[secrets] load failed',e); }
+}
 function saveDoc(snapshot){
   const src = serialize(nb.doc);
-  lsSet(LS.doc, src);
+  idbPut('doc', { id:'current', src });
   if (snapshot) pushHistory(src);
   setDirty(false);
 }
@@ -921,13 +939,14 @@ function saveSoon(){ clearTimeout(_saveTimer); _saveTimer=setTimeout(()=>saveDoc
 function setDirty(v){ nb.dirty=v; const el=$('#st-save'); el.textContent=v?'Unsaved':'Saved'; el.classList.toggle('dirty',v); }
 
 // history
-function readHistory(){ try { return JSON.parse(lsGet(LS.hist,'[]')); } catch(e){ return []; } }
+function readHistory(){ return nb.history; }
+function persistHistory(){ idbPut('snapshots', { id:'list', rows: nb.history }); }
 function pushHistory(src){
-  const h=readHistory();
+  const h=nb.history;
   if (h.length && h[0].src===src) return;
   h.unshift({ t: nowMs(), src });
   while (h.length>30) h.pop();
-  lsSet(LS.hist, JSON.stringify(h)); renderHistory();
+  persistHistory(); renderHistory();
 }
 let _clock = 0;
 function nowMs(){ return (typeof performance!=='undefined' && performance.timeOrigin) ? Math.round(performance.timeOrigin+performance.now()) : (++_clock); }
@@ -947,28 +966,81 @@ function fmtBytes(n){ if(n<1024)return n+' B'; if(n<1048576)return (n/1024).toFi
 
 // ── Assets: stored in IndexedDB as Blobs (large quota, no base64 inflation,
 //    not capped at localStorage's ~5 MB). Records: {name, blob, size, type}.
-const IDB_NAME='loveide', IDB_VER=1, IDB_STORE='assets';
+// IndexedDB is the home for ALL project data: doc, snapshots, libs, conf (meta),
+// binary assets, and encrypted secrets. Separate object stores per concern;
+// single-record stores key on a fixed id, assets key on filename.
+const IDB_NAME='loveide', IDB_VER=2;
+const IDB_KV_STORES=['doc','snapshots','libs','meta','secrets'];
 let _idbP=null;
 function idb(){
   if (_idbP) return _idbP;
   _idbP=new Promise((res,rej)=>{
     const q=indexedDB.open(IDB_NAME, IDB_VER);
-    q.onupgradeneeded=()=>{ const db=q.result; if(!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE,{keyPath:'name'}); };
+    q.onupgradeneeded=()=>{ const db=q.result;
+      if(!db.objectStoreNames.contains('assets')) db.createObjectStore('assets',{keyPath:'name'});
+      for(const st of IDB_KV_STORES) if(!db.objectStoreNames.contains(st)) db.createObjectStore(st,{keyPath:'id'});
+    };
     q.onsuccess=()=>res(q.result); q.onerror=()=>rej(q.error);
   });
   return _idbP;
 }
-function idbReq(mode, fn){
+function idbReq(store, mode, fn){
   return idb().then(db=>new Promise((res,rej)=>{
-    const tx=db.transaction(IDB_STORE, mode); const store=tx.objectStore(IDB_STORE);
-    let out; const r=fn(store); if(r) r.onsuccess=()=>{ out=r.result; };
+    const tx=db.transaction(store, mode); const st=tx.objectStore(store);
+    let out; const r=fn(st); if(r) r.onsuccess=()=>{ out=r.result; };
     tx.oncomplete=()=>res(out); tx.onerror=()=>rej(tx.error); tx.onabort=()=>rej(tx.error);
   }));
 }
-const idbAllAssets = () => idbReq('readonly', s=>s.getAll()).then(r=>r||[]).catch(()=>[]);
-const idbPutAsset  = rec => idbReq('readwrite', s=>{ s.put(rec); });
-const idbDelAsset  = name => idbReq('readwrite', s=>{ s.delete(name); });
-const idbClearAssets = () => idbReq('readwrite', s=>{ s.clear(); });
+// Single-record kv helpers.
+const idbGet = (store,id) => idbReq(store,'readonly', s=>s.get(id)).then(r=>r||null).catch(()=>null);
+const idbPut = (store,rec) => idbReq(store,'readwrite', s=>{ s.put(rec); }).catch(e=>console.error('[idb] put '+store+' failed',e));
+const idbDel = (store,id) => idbReq(store,'readwrite', s=>{ s.delete(id); }).catch(()=>{});
+// Assets (binary blobs), keyed by filename.
+const idbAllAssets = () => idbReq('assets','readonly', s=>s.getAll()).then(r=>r||[]).catch(()=>[]);
+const idbPutAsset  = rec => idbReq('assets','readwrite', s=>{ s.put(rec); });
+const idbDelAsset  = name => idbReq('assets','readwrite', s=>{ s.delete(name); });
+const idbClearAssets = () => idbReq('assets','readwrite', s=>{ s.clear(); });
+
+// ── Secrets — encrypted at rest with a non-extractable AES-GCM-256 device key.
+//    The CryptoKey object lives in IndexedDB but its raw bytes are never exposed
+//    to JS (generated extractable:false), so injected script can't exfiltrate it.
+//    Ported from the oracle. Storage + minimal API; management UI not built yet.
+let sDeviceKey=null, sSecrets=[];
+const _enc = s => new TextEncoder().encode(s);
+const _dec = b => new TextDecoder().decode(b);
+const _rnd = n => crypto.getRandomValues(new Uint8Array(n));
+async function getOrCreateDeviceKey(){
+  const stored=await idbGet('secrets','device-key');
+  if(stored && stored.key instanceof CryptoKey) return stored.key;
+  const key=await crypto.subtle.generateKey({name:'AES-GCM',length:256}, false, ['encrypt','decrypt']);
+  await idbPut('secrets', { id:'device-key', key });
+  return key;
+}
+async function aesEncrypt(key,text){
+  const iv=_rnd(12);
+  const ct=await crypto.subtle.encrypt({name:'AES-GCM',iv}, key, _enc(text));
+  return { iv:btoa(String.fromCharCode(...iv)), ct:btoa(String.fromCharCode(...new Uint8Array(ct))) };
+}
+async function aesDecrypt(key,obj){
+  const ivB=Uint8Array.from(atob(obj.iv),c=>c.charCodeAt(0));
+  const ctB=Uint8Array.from(atob(obj.ct),c=>c.charCodeAt(0));
+  return _dec(await crypto.subtle.decrypt({name:'AES-GCM',iv:ivB}, key, ctB));
+}
+async function loadSecrets(){
+  try { sDeviceKey=await getOrCreateDeviceKey(); } catch(e){ console.error('[secrets] key init failed',e); sDeviceKey=null; sSecrets=[]; return; }
+  const data=await idbGet('secrets','data'); sSecrets=[];
+  if(data && data.rows) for(const r of data.rows){ try{ sSecrets.push({ k:await aesDecrypt(sDeviceKey,r.k), v:await aesDecrypt(sDeviceKey,r.v) }); }catch(e){} }
+}
+async function saveSecrets(){
+  if(!sDeviceKey) return;
+  const rows=await Promise.all(sSecrets.map(async r=>({ k:await aesEncrypt(sDeviceKey,r.k), v:await aesEncrypt(sDeviceKey,r.v) })));
+  await idbPut('secrets', { id:'data', rows });
+}
+// Minimal API for the future Secrets UI / remote backends.
+function getSecret(k){ const r=sSecrets.find(x=>x.k===k); return r?r.v:null; }
+function listSecrets(){ return sSecrets.map(x=>x.k); }
+async function setSecret(k,v){ const r=sSecrets.find(x=>x.k===k); if(r) r.v=v; else sSecrets.push({k,v}); await saveSecrets(); }
+async function deleteSecret(k){ sSecrets=sSecrets.filter(x=>x.k!==k); await saveSecrets(); }
 
 async function renderAssets(){
   const wrap=$('#asset-list'); if(!wrap) return; wrap.innerHTML='';
@@ -993,8 +1065,8 @@ async function addAssets(fileList){
 
 /* ── Game settings → conf.lua (generated into the .love at build) ── */
 const CONF_DEFAULTS = { title:'Untitled', identity:'loveide-game', version:'11.5', width:800, height:600, resizable:false, vsync:true, fullscreen:false };
-function readConf(){ try { return Object.assign({}, CONF_DEFAULTS, JSON.parse(lsGet('loveide:conf','{}'))); } catch(e){ return Object.assign({}, CONF_DEFAULTS); } }
-function writeConf(c){ lsSet('loveide:conf', JSON.stringify(c)); }
+function readConf(){ return Object.assign({}, CONF_DEFAULTS, nb.conf||{}); }
+function writeConf(c){ nb.conf = Object.assign({}, c); idbPut('meta', { id:'conf', conf: nb.conf }); }
 function luaStr(s){ return '"' + String(s).replace(/\\/g,'\\\\').replace(/"/g,'\\"').replace(/\n/g,'\\n') + '"'; }
 // `devHooks` appends preview-only instrumentation (see ERRHAND_HOOK). The export
 // path passes false so the shipped conf.lua is clean main.lua + conf only.
@@ -1045,88 +1117,68 @@ function wireConf(){
   });
 }
 
-/* ── Storage meter ── */
-function lsBytes(key){ const v=lsGet(key,null); return v==null ? 0 : (key.length + v.length) * 2; }
-// Enumerate Cache Storage (where WebLLM keeps model weights + the love.js wasm).
-// Sizes come from content-length headers — reading multi-GB blobs to measure is
-// not viable — so a shard missing that header is under-counted.
-async function cacheBreakdown(){
-  const out={ total:0, perModel:{}, other:0, available:('caches' in window) };
-  if(!out.available) return out;
+/* ── Storage meter — read-only data viz. One origin Used/Max bar (quota is a
+ *    soft, browser-granted estimate, NOT a hard cap), then two breakdowns:
+ *    Local Data (IndexedDB project: doc/snapshots/libs/assets/secrets) and Local
+ *    Cache (regenerable downloads: agent models, love.js). Other = origin
+ *    remainder; Total = Used. No management here — that lives in each section. ── */
+function jsonBytes(o){ try { return new Blob([typeof o==='string'?o:JSON.stringify(o)]).size; } catch(e){ return 0; } }
+// Sum Cache Storage by content-length (reading multi-GB blobs to measure isn't
+// viable); split agent model weights from everything else (love.js / CDN).
+async function cacheScan(){
+  const out={ agents:0, engine:0 };
+  if(!('caches' in window)) return out;
   try {
     for(const name of await caches.keys()){
       const c=await caches.open(name);
       for(const req of await c.keys()){
         const res=await c.match(req); if(!res) continue;
         const len=+(res.headers.get('content-length'))||0;
-        out.total+=len;
-        const m=AGENT_MODELS.find(x=>req.url.includes(x.id));
-        if(m) out.perModel[m.id]=(out.perModel[m.id]||0)+len; else out.other+=len;
+        if(AGENT_MODELS.some(m=>req.url.includes(m.id))) out.agents+=len; else out.engine+=len;
       }
     }
   } catch(e){ console.error('[storage] cache scan failed',e); }
   return out;
 }
-// Delete cached entries that aren't model weights (love.js wasm, CDN libs) — they
-// re-download on next use. Models are evicted per-row via agentRemove().
-async function clearOtherCaches(){
-  if(!('caches' in window)) return;
-  for(const name of await caches.keys()){
-    const c=await caches.open(name);
-    for(const req of await c.keys()) if(!AGENT_MODELS.some(x=>req.url.includes(x.id))) await c.delete(req);
-  }
-}
 async function renderStorage(){
   const wrap=$('#storage-body'); if(!wrap) return;
   const assets=await idbAllAssets();
   const assetBytes=assets.reduce((s,a)=>s+(a.size||0),0);
-  const cache=await cacheBreakdown();
-  const lsDoc=lsBytes(LS.doc), lsHist=lsBytes(LS.hist), lsLibs=lsBytes('loveide:libs');
-  const measured=lsDoc+lsHist+lsLibs+assetBytes+cache.total;
-  // Honest quota: the StorageManager estimate is a soft, browser-granted figure
-  // (usage can exceed it), and may be absent. Never invent a fixed maximum.
-  let usage=null, quota=null, persisted=null;
-  try { if(navigator.storage&&navigator.storage.estimate){ const e=await navigator.storage.estimate(); usage=(e&&e.usage)||0; quota=(e&&e.quota)||null; } } catch(e){}
-  try { if(navigator.storage&&navigator.storage.persisted) persisted=await navigator.storage.persisted(); } catch(e){}
-  const used=(usage!=null)?usage:measured;
-  const other=(usage!=null)?Math.max(0,usage-measured):0;   // origin usage we couldn't attribute
-  const pct=(quota!=null&&quota>0)?used/quota*100:null;
+  const secRec=await idbGet('secrets','data');
+  const cache=await cacheScan();
+  const dataRows=[
+    ['main.lua',  jsonBytes(serialize(nb.doc))],
+    ['Snapshots', jsonBytes(nb.history)],
+    ['Libraries', jsonBytes(nb.libs)],
+    ['Assets',    assetBytes],
+    ['Secrets',   secRec ? jsonBytes(secRec) : 0],
+  ];
+  const cacheRows=[
+    ['Agents',           cache.agents],
+    ['Engine (love.js)', cache.engine],
+  ];
+  const dataTotal=dataRows.reduce((s,r)=>s+r[1],0);
+  const cacheTotal=cacheRows.reduce((s,r)=>s+r[1],0);
+  // Origin usage/quota — soft, browser-granted, may be absent. Never a hard cap.
+  let usage=null, quota=null;
+  try { if(navigator.storage && navigator.storage.estimate){ const e=await navigator.storage.estimate(); usage=(e&&e.usage)||0; quota=(e&&e.quota)||null; } } catch(e){}
+  const used  = usage!=null ? usage : (dataTotal+cacheTotal);
+  const other = usage!=null ? Math.max(0, usage-dataTotal-cacheTotal) : 0;
 
   wrap.innerHTML='';
-  wrap.appendChild(elem('div',{class:'storage-total'},[ elem('span',{text:usage!=null?'Used (this origin)':'Used (measured)'}), elem('b',{text:fmtBytes(used)+' / '+(quota!=null?fmtBytes(quota):'unknown')}) ]));
-  if(quota!=null) wrap.appendChild(elem('div',{class:'storage-note',text:'Quota is a soft, browser-granted estimate — not a hard cap'+(pct>100?' (already exceeded).':'.')}));
-  if(pct!=null) wrap.appendChild(elem('div',{class:'storage-bar'},[ elem('div',{class:'storage-fill'+(pct>=100?' full':pct>80?' warn':''),style:'width:'+Math.min(100,pct)+'%'}) ]));
-  if(pct!=null&&pct>80) wrap.appendChild(elem('div',{class:'storage-warn',text:pct>100?'Over the soft quota — the browser may evict data and localStorage saves can fail silently.':'Near the soft quota ('+Math.round(pct)+'%) — consider freeing space.'}));
-  if(_lsFull) wrap.appendChild(elem('div',{class:'storage-warn',text:'A localStorage save recently failed (quota). Free space to avoid losing edits.'}));
+  wrap.appendChild(elem('div',{class:'storage-total'},[ elem('span',{text:'Used / Max ('+(quota!=null?'Estimate':'Unknown')+')'}), elem('b',{text:fmtBytes(used)+' / '+(quota!=null?fmtBytes(quota):'?')}) ]));
+  let fillCls='', fillW=0;
+  if(quota!=null){ const pct=used/quota*100; fillW=Math.min(100,pct); fillCls = pct>=100?' full' : pct>=80?' warn' : ''; }
+  wrap.appendChild(elem('div',{class:'storage-bar'},[ elem('div',{class:'storage-fill'+fillCls,style:'width:'+fillW+'%'}) ]));
 
-  const row=(label,bytes,onclear,btnLabel)=>{ const kids=[ elem('span',{class:'grow',text:label}), elem('span',{class:'val',text:fmtBytes(bytes)}) ]; if(onclear&&bytes>0){ const b=elem('button',{class:'clr',text:btnLabel||'Clear'}); b.onclick=onclear; kids.push(b); } wrap.appendChild(elem('div',{class:'storage-row'},kids)); };
-  row('main.lua', lsDoc);
-  row('Snapshots', lsHist, async()=>{ if(confirm('Clear all snapshots?')){ lsSet(LS.hist,'[]'); renderHistory(); renderStorage(); toast('Snapshots cleared'); } });
-  row('Libraries', lsLibs, async()=>{ if(confirm('Clear Libraries?')){ lsSet('loveide:libs','[]'); renderLibs(); renderStorage(); toast('Libraries cleared'); } });
-  row('Assets (IndexedDB)', assetBytes, async()=>{ if(confirm('Clear all assets?')){ await idbClearAssets(); renderAssets(); renderStorage(); toast('Assets cleared'); } });
-
-  // Agent models & cache (the multi-GB consumers the old panel never measured).
-  if(Object.keys(cache.perModel).length || cache.other>0){
-    wrap.appendChild(elem('div',{class:'storage-section',text:'Agent models & cache'}));
-    AGENT_MODELS.forEach(m=>{ const b=cache.perModel[m.id]; if(!b) return; row(m.label, b, async()=>{ if(confirm('Evict '+m.label+' ('+fmtBytes(b)+')?')){ await agentRemove(m.id); renderStorage(); toast(m.label+' evicted'); } }, 'Evict'); });
-    if(cache.other>0) row('Engine / other cache', cache.other, async()=>{ if(confirm('Clear engine / other cache? It re-downloads on next use.')){ await clearOtherCaches(); renderStorage(); toast('Cache cleared'); } });
-  }
-  if(other>0) row('Other / unaccounted', other);
-
-  // Agent usage (cost-of-use): VRAM of the active model + estimated tokens this session.
-  if(agent.activeId || agent.sessionTokens){
-    const m=AGENT_MODELS.find(x=>x.id===agent.activeId);
-    wrap.appendChild(elem('div',{class:'storage-section',text:'Agent usage (this session)'}));
-    wrap.appendChild(elem('div',{class:'storage-row'},[ elem('span',{class:'grow',text:'Active model VRAM'}), elem('span',{class:'val',text: m? fmtBytes(m.vramMB*1048576):'—'}) ]));
-    wrap.appendChild(elem('div',{class:'storage-row'},[ elem('span',{class:'grow',text:'Tokens used (est.)'}), elem('span',{class:'val',text:(agent.sessionTokens||0).toLocaleString()}) ]));
-    wrap.appendChild(elem('div',{class:'storage-row'},[ elem('span',{class:'grow',text:'Est. cost'}), elem('span',{class:'val',text:'local — free'}) ]));
-  }
-
-  const actions=elem('div',{class:'storage-actions'});
-  if(persisted===false){ const p=elem('button',{class:'clr',text:'Request persistent storage'}); p.onclick=async()=>{ try{ const ok=await navigator.storage.persist(); toast(ok?'Storage is now persistent':'Browser declined persistence'); renderStorage(); }catch(e){} }; actions.appendChild(p); }
-  else if(persisted===true) actions.appendChild(elem('span',{class:'storage-note',text:'Storage is persistent — won’t be evicted under pressure.'}));
-  const free=elem('button',{class:'clr',text:'Free up space'}); free.onclick=async()=>{ if(confirm('Evict all inactive models and clear regenerable caches? Your document and assets are kept.')){ for(const id of [...agent.installed]) if(id!==agent.activeId) await agentRemove(id); await clearOtherCaches(); renderStorage(); toast('Freed space'); } }; actions.appendChild(free);
-  wrap.appendChild(actions);
+  const grp=(label,sub)=>elem('div',{class:'storage-group'},[ elem('span',{class:'grow',text:label}), elem('span',{class:'val',text:fmtBytes(sub)}) ]);
+  const row=(label,bytes)=>elem('div',{class:'storage-row indent'},[ elem('span',{class:'grow',text:label}), elem('span',{class:'val',text:fmtBytes(bytes)}) ]);
+  wrap.appendChild(grp('Local Data', dataTotal));
+  dataRows.forEach(r=>wrap.appendChild(row(r[0], r[1])));
+  wrap.appendChild(grp('Local Cache', cacheTotal));
+  cacheRows.forEach(r=>wrap.appendChild(row(r[0], r[1])));
+  if(usage!=null && other>0) wrap.appendChild(elem('div',{class:'storage-row'},[ elem('span',{class:'grow',text:'Other'}), elem('span',{class:'val',text:fmtBytes(other)}) ]));
+  wrap.appendChild(elem('div',{class:'storage-foot'},[ elem('span',{class:'grow',text:'Total'}), elem('span',{class:'val',text:fmtBytes(used)}) ]));
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -1546,30 +1598,85 @@ function jumpToLine(line, map){
 }
 async function analyzeCurrent(){ const lp=await loadLuaparse(); const src=serialize(nb.doc); return { res: lp?analyzeLua(src,lp):heuristicAnalyze(src), lp:!!lp }; }
 
-function appendVarSection(wrap, title, items, map){
-  if(!items.length) return;
-  const head=elem('div',{class:'var-section'},[ elem('span',{class:'chev',html:svg('chevron')}), elem('span',{text:title}), elem('span',{class:'count',text:String(items.length)}) ]);
-  const body=elem('div');
-  items.forEach(it=>{
-    const row=elem('div',{class:'var-row',title:it.name},[
-      elem('div',{class:'var-row-top'},[ elem('span',{class:'var-name',text:it.name}), elem('span',{class:'var-type',text:it.type}) ]),
-      it.preview?elem('div',{class:'var-preview',text:it.preview}):null,
-    ]);
-    row.onclick=()=>jumpToLine(it.line, map);
-    body.appendChild(row);
-  });
-  head.onclick=()=>{ head.classList.toggle('collapsed'); body.style.display=head.classList.contains('collapsed')?'none':''; };
+// Scope-grouped variables: top-level data vars + one group per function (incl.
+// nested), each holding that scope's params + locally-declared data variables.
+// Functions appear even with zero variables (expandable, just empty). Values are
+// static (as written in source) — not live runtime values. Distinct from the
+// Outline (cells/navigation) and Tables (table contents as grids).
+function analyzeScopes(src, luaparse){
+  const out={ topVars:[], funcs:[], error:null };
+  let ast; try{ ast=luaparse.parse(src,{locations:true,ranges:true,comments:false,luaVersion:'5.3'}); }catch(e){ out.error=e.message||String(e); return out; }
+  const line=n=>n.loc?n.loc.start.line:0;
+  const isFn=n=>n&&(n.type==='FunctionDeclaration'||n.type==='FunctionExpression');
+  // Data variables declared directly in this statement list (not function-valued,
+  // and not descending into nested function bodies — those become their own group).
+  const collectVars=body=>{
+    const vars=[];
+    for(const n of body){
+      if(n.type!=='LocalStatement' && n.type!=='AssignmentStatement') continue;
+      const isLocal=n.type==='LocalStatement';
+      n.variables.forEach((v,i)=>{
+        const init=n.init&&n.init[i]; if(isFn(init)) return;   // functions belong to .funcs
+        if(v.type!=='Identifier') return;                      // skip field mutations (t.x = …), not declarations
+        vars.push({ name:v.name, type:lpValType(init), preview:lpDisp(init,src), line:line(n), local:isLocal });
+      });
+    }
+    return vars;
+  };
+  // Record a function group, then recurse so nested functions get their own groups.
+  const pushFn=(name,fnNode,defLine,isLocal)=>{
+    const params=(fnNode.parameters||[]).map(p=>p.name||'...');
+    out.funcs.push({ name, sig:'('+params.join(', ')+')', line:defLine, local:!!isLocal,
+      vars: params.map(p=>({name:p,type:'param',preview:'',line:defLine})).concat(collectVars(fnNode.body)) });
+    walkFns(fnNode.body);
+  };
+  function walkFns(body){
+    for(const n of body){
+      if(n.type==='FunctionDeclaration'){ pushFn(lpMemberName(n.identifier), n, line(n), n.isLocal); }
+      else if(n.type==='LocalStatement' || n.type==='AssignmentStatement'){
+        n.variables.forEach((v,i)=>{ const init=n.init&&n.init[i]; if(isFn(init)) pushFn(lpMemberName(v), init, line(n), n.type==='LocalStatement'); });
+      }
+    }
+  }
+  out.topVars=collectVars(ast.body);
+  walkFns(ast.body);
+  return out;
+}
+// One collapsible scope group: header toggles expand/collapse ONLY (no notebook
+// navigation — that is solely the Outline's job). Body holds read-only var rows.
+function appendScopeSection(wrap, label, vars, startCollapsed){
+  const head=elem('div',{class:'var-section'+(startCollapsed?' collapsed':'')},[
+    elem('span',{class:'chev',html:svg('chevron')}),
+    elem('span',{class:'var-fn',text:label}),
+    elem('span',{class:'count',text:String(vars.length)}),
+  ]);
+  const body=elem('div'); if(startCollapsed) body.style.display='none';
+  if(!vars.length) body.appendChild(elem('div',{class:'var-empty',text:'no variables'}));
+  else vars.forEach(v=>body.appendChild(elem('div',{class:'var-row'},[
+    elem('div',{class:'var-row-top'},[ elem('span',{class:'var-name',text:v.name}), elem('span',{class:'var-type',text:v.type}) ]),
+    v.preview?elem('div',{class:'var-preview',text:v.preview}):null,
+  ])));
+  head.onclick=()=>{ const c=head.classList.toggle('collapsed'); body.style.display=c?'none':''; };
   wrap.appendChild(head); wrap.appendChild(body);
 }
 async function renderVariablesTab(){
   const wrap=$('#var-list'); if(!wrap) return;
-  const { res, lp } = await analyzeCurrent(); const map=cellLineMap();
+  const lp=await loadLuaparse(); const src=serialize(nb.doc);
   wrap.innerHTML='';
-  if(!lp) wrap.appendChild(elem('div',{class:'pane-note',text:'Approximate — Lua parser offline.'}));
-  if(res.error){ wrap.appendChild(elem('div',{class:'pane-empty',text:'Parse error: '+res.error})); return; }
-  appendVarSection(wrap,'Functions', res.functions.map(f=>({name:f.name+f.sig, type:f.local?'local':'global', preview:'', line:f.line})), map);
-  appendVarSection(wrap,'Globals', res.globals.map(g=>({name:g.name, type:g.type, preview:g.preview, line:g.line})), map);
-  if(!res.functions.length && !res.globals.length) wrap.appendChild(panePlaceholder('variable','No top-level symbols','Define functions or variables in main.lua'));
+  if(!lp){
+    // Offline: regex scan sees top-level only; no scope grouping.
+    const res=heuristicAnalyze(src);
+    wrap.appendChild(elem('div',{class:'pane-note',text:'Scope grouping needs the Lua parser (offline) — top-level only.'}));
+    if(!res.globals.length){ wrap.appendChild(panePlaceholder('variable','No variables','Declare variables in main.lua')); return; }
+    appendScopeSection(wrap,'Top level', res.globals.map(g=>({name:g.name,type:g.type,preview:g.preview})), false);
+    return;
+  }
+  const a=analyzeScopes(src, lp);
+  if(a.error){ wrap.appendChild(elem('div',{class:'pane-empty',text:'Parse error: '+a.error})); return; }
+  if(!a.topVars.length && !a.funcs.length){ wrap.appendChild(panePlaceholder('variable','No variables','Declare variables in main.lua, or in love.load / callbacks')); return; }
+  wrap.appendChild(elem('div',{class:'pane-note',text:'Static values, as written in source — not live runtime values.'}));
+  if(a.topVars.length) appendScopeSection(wrap,'Top level', a.topVars, false);
+  a.funcs.forEach(f=>appendScopeSection(wrap, f.name+f.sig, f.vars, true));
 }
 function recordsGrid(t){
   const wrap=elem('div',{class:'tbl-grid'}); const table=document.createElement('table');
@@ -1612,8 +1719,8 @@ const LIB_REGISTRY = [
 ];
 function libPath(e){ return e.path || ('lib/'+e.id+'.lua'); }
 function libRequire(e){ return libPath(e).replace(/^/,'').replace(/\.lua$/,'').replace(/\//g,'.'); }
-function readLibs(){ try { return JSON.parse(lsGet('loveide:libs','[]')); } catch(e){ return []; } }
-function writeLibs(l){ lsSet('loveide:libs', JSON.stringify(l)); renderLibs(); }
+function readLibs(){ return nb.libs; }
+function writeLibs(l){ nb.libs = l; idbPut('libs', { id:'list', rows: nb.libs }); renderLibs(); }
 function renderLibs(){
   const wrap=$('#lib-list'); if(!wrap) return; wrap.innerHTML='';
   const installed=new Set(readLibs().map(l=>l.id));
@@ -1724,7 +1831,7 @@ const AGENT_MODELS = [
   { id:'Qwen2.5-Coder-3B-Instruct-q4f16_1-MLC',   label:'Qwen2.5-Coder 3B',   tier:'Balanced', vramMB:2505 },
   { id:'Qwen2.5-Coder-7B-Instruct-q4f16_1-MLC',   label:'Qwen2.5-Coder 7B',   tier:'Expert',   vramMB:5107 },
 ];
-const agent = { gpu:null, llm:null, engine:null, installed:new Set(), installedChecked:false, activeId:null, busyId:null, op:'', progress:'', generating:false, error:'', messages:[], sessionTokens:0 };
+const agent = { gpu:null, llm:null, engine:null, installed:new Set(), installedChecked:false, activeId:null, busyId:null, op:'', progress:'', generating:false, error:'', messages:[] };
 function agentLabelFor(id){ const m=AGENT_MODELS.find(x=>x.id===id); return m?m.label:id; }
 function agentErr(e){ return (e&&e.message)?e.message:String(e); }
 
@@ -1909,7 +2016,6 @@ async function agentSend(text){
     const chunks=await agent.engine.chat.completions.create({ messages:convo, stream:true });
     let acc='';
     for await (const chunk of chunks){ acc += (chunk&&chunk.choices&&chunk.choices[0]&&chunk.choices[0].delta&&chunk.choices[0].delta.content)||''; agent.messages[agent.messages.length-1].content=acc; renderAgentMessages(); }
-    agent.sessionTokens += convo.reduce((n,m)=>n+estTokens(m.content),0) + estTokens(acc);
   } catch(e){ agent.messages[agent.messages.length-1].content='⚠️ '+agentErr(e); console.error('[WebLLM] generate failed',e); renderAgentMessages(); }
   agent.generating=false; syncAgentPill();
 }
@@ -2170,7 +2276,7 @@ function wire(){
   $('#add-asset').onclick=()=>$('#asset-input').click();
   $('#asset-input').onchange=e=>{ addAssets(e.target.files); e.target.value=''; };
   $('#snap-now').onclick=()=>{ saveDoc(true); toast('Snapshot saved'); };
-  $('#snap-clear').onclick=()=>{ if(confirm('Clear all snapshots?')){ lsSet(LS.hist,'[]'); renderHistory(); renderStorage(); toast('Snapshots cleared'); } };
+  $('#snap-clear').onclick=()=>{ if(confirm('Clear all snapshots?')){ nb.history=[]; persistHistory(); renderHistory(); renderStorage(); toast('Snapshots cleared'); } };
   $('#api-search').oninput=e=>renderApi(e.target.value);
   $('#toggle-console').onclick=()=>showConsole();
   $('#st-agent').onclick=()=>openTab('assistant');
@@ -2188,12 +2294,12 @@ function registerIsolationSW(){
   const s=document.createElement('script'); s.src='coi-serviceworker.js'; s.onerror=()=>{}; document.head.appendChild(s);
 }
 
-function boot(){
+async function boot(){
   try { nb.opts = Object.assign(nb.opts, JSON.parse(lsGet(LS.opts,'{}'))); } catch(e){}
   $('#placeholder-icon').innerHTML=`<svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${I.play}</svg>`;
   paintIcons();
   applyTheme();
-  loadDoc();
+  await loadAll();
   wire();
   renderNotebook();
   renderAssets();

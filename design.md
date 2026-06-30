@@ -48,12 +48,12 @@ flowchart TD
 
     DOC --> BUILD["Build .love (JSZip)<br/>+ conf.lua + assets + libs"]
     CONF["conf.lua model"] --> BUILD
-    IDB[("IndexedDB<br/>binary assets")] --> BUILD
+    IDB[("IndexedDB<br/>doc · snapshots · libs · conf · assets · secrets")] --> BUILD
     BUILD --> RUNTIME["Runtime<br/>fresh iframe + love.js"]
     RUNTIME -->|postMessage| CONSOLE["Console<br/>print / errors / boot signal"]
     CONSOLE --> AGENT
 
-    LS[("localStorage<br/>doc · history · conf · theme · opts")] --> DOC
+    LS[("localStorage<br/>theme · opts · tab state (prefs only)")] --> DOC
     DOC --> LS
 
     BUILD --> EXPORT["Export .love download"]
@@ -61,8 +61,10 @@ flowchart TD
 
 Read it as: **one source feeds many read-only projections**, and only two things
 write back to the source — the cell editors and the agent's Hands (when enabled).
-Persistence is split by data shape: structured state in `localStorage`, binary
-assets in IndexedDB.
+Persistence is split by data *nature*: **IndexedDB** holds all project data (doc,
+snapshots, libraries, conf, binary assets, encrypted secrets), loaded into memory
+once at boot; **localStorage** holds only tiny disposable app prefs (theme, opts,
+tab state); the **Cache API** holds regenerable downloads (model weights, love.js).
 
 ---
 
@@ -75,7 +77,7 @@ Mirrors the numbered banner sections in `index.html` (JS sections 0–10).
 | 0 | Icons | Inline SVG, no icon webfont (the oracle uses one) | `I.*` |
 | 1 | Doc model | `main.lua` ↔ cells; the round-trip invariant | `parse`, `serialize`, `normalizeGlue`, `cellBody` |
 | 2 | Markdown | marked.js when present, compact built-in fallback | `renderMarkdownHTML` |
-| 3 | State + persistence | localStorage + IndexedDB assets + history snapshots | `LS`, `idb*`, `readConf/writeConf`, history |
+| 3 | State + persistence | IndexedDB project data (loaded to memory at boot) + localStorage prefs + Cache API downloads + encrypted secrets | `loadAll`, `idb*`, `idbGet/idbPut`, `loadSecrets`, `LS` |
 | 4 | Theme | 6 themes via CSS variables; brand pink/steel | `getTheme`, `applyTheme` |
 | 5 | CodeMirror | Lua editor on demand; textarea fallback | `loadCM` |
 | 6 | Cell DOM | Render/edit/reorder cells; markdown WYSIWYG | cell render + drag-to-reorder |
@@ -158,8 +160,9 @@ Coarse, per-subsystem. Status is the highest claim rung currently justified.
 |-----------|:------:|--------------------------------|
 | Doc model | **B** | Round-trip invariant covered by self-tests; `-- %%` separators + long-bracket md comments. Our own model — oracle's is SQL/Python-cell oriented. |
 | Markdown | **B** | marked.js + built-in fallback. |
-| State / localStorage | **B** | doc / history / conf / theme / opts. |
-| Assets / IndexedDB | **D** | Blobs in IDB (not base64). **Divergence considered:** OPFS rejected — no user-visible files, Chromium-leaning; IDB is enough and portable. Build-time inclusion is browser-only to confirm end-to-end. |
+| State / persistence | **D** | **Storage tiers by data nature:** IndexedDB = all project data (doc · snapshots · libs · conf · assets · secrets), loaded to memory at boot via `loadAll`, sync reads / async writes; localStorage = tiny prefs only (theme · opts · tab); Cache API = regenerable downloads. kv + AES-GCM secrets round-trip dependency-verified (fake-indexeddb + WebCrypto); end-to-end in-browser still owed. No migration (no data worth keeping). |
+| Assets / IndexedDB | **D** | Blobs in IDB (not base64). **Divergence considered:** OPFS rejected — no user-visible files, Chromium-leaning; IDB is enough and portable. |
+| Secrets / encrypted | **D** | AES-GCM under a non-extractable device key (key + ciphertext in IDB); ported from the oracle. Storage + minimal API built; **no UI yet**. Verified headless: key non-extractable, ciphertext carries no plaintext. |
 | Theme | **B** | 6 themes; brand pink `#EC4899` / steel `#7C8A99`. Heart-`</>` mark shelved. |
 | CodeMirror editor | **B** (load **browser-only**) | Lua via legacy mode; textarea fallback if CDN blocked. |
 | Cell UI / reorder | **B** | Ported drag-to-reorder from the oracle. |
