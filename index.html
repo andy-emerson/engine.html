@@ -2109,7 +2109,10 @@ async function initAgent(){
  * ════════════════════════════════════════════════════════════════════════════ */
 const RT = {
   JSZIP: 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js',
-  BASE: 'https://cdn.jsdelivr.net/gh/2dengine/love.js@master/',
+  // Pinned to a specific 2dengine/love.js commit. The repo has no tags and only a
+  // `main` branch — the old `@master` ref was dead (jsdelivr was serving a stale
+  // cache of it). A commit pin is immutable + reproducible; bump deliberately.
+  BASE: 'https://cdn.jsdelivr.net/gh/2dengine/love.js@495c5eb7eb55b54aaadfc21405c58f50a6d819c4/',
   get PLAYER(){ return this.BASE + 'player.js'; },
   VERSION: '11.5',
 };
