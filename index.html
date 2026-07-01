@@ -2391,7 +2391,10 @@ function renderAgentRemote(){
     // is committed. Commit here just saves to Secrets (shell only, no fetch
     // yet); it's the same slot the real "save + fetch models" action lands in.
     const fieldEls=p.fields.map(f=>{
-      const inp=elem('input',{type:'password',class:'agent-input',placeholder:f.label});
+      // autocomplete=off + a unique, non-guessable name: several near-identical
+      // password fields on one page is exactly the shape browser password
+      // managers over-eagerly autofill into the wrong one.
+      const inp=elem('input',{type:'password',class:'agent-input',placeholder:f.label,autocomplete:'off',name:'agent-'+id+'-'+f.key});
       const existing=getSecret('agent:'+id+':'+f.key);
       if(existing) inp.value=existing;
       return inp;
