@@ -2140,10 +2140,16 @@ function agentErr(e){ return (e&&e.message)?e.message:String(e); }
  *    Gemini are in TODO.md, already confirmed CORS-reachable when added back. ── */
 const AGENT_PROVIDERS = [
   { id:'anthropic', agent:'Claude',  provider:'Anthropic', fields:[{key:'apiKey',label:'API key'}],
+    keyUrl:'https://console.anthropic.com/settings/keys',
     listModelsUrl:'https://api.anthropic.com/v1/models',
     authHeaders:key=>({ 'x-api-key':key, 'anthropic-version':'2023-06-01', 'anthropic-dangerous-direct-browser-access':'true' }),
     parseModels:json=>(json.data||[]).map(m=>({ id:m.id, label:m.display_name||m.id })) },
+  // "ChatGPT" is the recognizable brand, but the key it needs is a *Platform*
+  // API key (platform.openai.com), a separate account/product from a ChatGPT
+  // subscription and unrelated to Codex's OAuth login — keyUrl exists
+  // specifically to cut through that mix-up.
   { id:'openai',    agent:'ChatGPT', provider:'OpenAI',    fields:[{key:'apiKey',label:'API key'}],
+    keyUrl:'https://platform.openai.com/api-keys',
     listModelsUrl:'https://api.openai.com/v1/models',
     authHeaders:key=>({ 'Authorization':'Bearer '+key }),
     // /v1/models lists every OpenAI model (embeddings, whisper, tts, dall-e,
@@ -2152,6 +2158,7 @@ const AGENT_PROVIDERS = [
     // once tested live.
     parseModels:json=>(json.data||[]).filter(m=>/^(gpt-|o1|o3|o4|chatgpt)/.test(m.id)).map(m=>({ id:m.id, label:m.id })) },
   { id:'xai',       agent:'Grok',    provider:'xAI',       fields:[{key:'apiKey',label:'API key'}],
+    keyUrl:'https://console.x.ai',
     listModelsUrl:'https://api.x.ai/v1/models',
     authHeaders:key=>({ 'Authorization':'Bearer '+key }),
     parseModels:json=>(json.data||[]).map(m=>({ id:m.id, label:m.id })) },
@@ -2369,7 +2376,10 @@ function renderAgentRemote(){
   visible.forEach(p=>{
     const id=p.id;
     const wrap=elem('div',{style:'margin-top:14px'});
-    wrap.appendChild(elem('div',{class:'agent-field-label',text:agentHeading(p)}));
+    wrap.appendChild(elem('div',{class:'agent-row',style:'justify-content:space-between'},[
+      elem('span',{class:'agent-field-label',text:agentHeading(p)}),
+      elem('a',{href:p.keyUrl,target:'_blank',rel:'noopener',style:'font-size:11px;color:var(--text-tertiary);text-decoration:underline',text:'Get a key →'}),
+    ]));
 
     // Requirement fields first — the model list below only exists once a key
     // is committed. Commit here just saves to Secrets (shell only, no fetch
