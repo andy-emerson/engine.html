@@ -2487,7 +2487,6 @@ function renderAgentLocal(){
     else if(v.resultMB!=null) resultText='~'+v.resultMB+' MB free (measured just now)';
     wrap.appendChild(elem('div',{class:'agent-row',style:'margin-top:7px'},[measureBtn, elem('span',{class:'kv-desc',text:resultText})]));
     if(v.error) wrap.appendChild(elem('div',{style:'font-size:11px;color:var(--fn-red);margin-top:4px;word-break:break-word',text:v.error}));
-    let deferredSync=null;
     if(v.resultMB!=null && !v.testing){
       const savedMB=parseInt(lsGet('loveide:qwenVramMB',''),10);
       const maxMB=Math.max(512, v.resultMB);   // slider runs the full measurement — the color zones are the warning, not a hard ceiling
@@ -2508,18 +2507,20 @@ function renderAgentLocal(){
 
       const label=elem('span',{class:'kv-desc',style:'min-width:92px;text-align:right',text:startMB+' MB'});
       const setBtn=elem('button',{class:'kv-btn commit'});   // .commit reuses the existing blue-on-hover pairing (Commit/Remove) rather than inventing a new hover color
-      // Fill width is computed in pixels, not a CSS %, and not against track's
-      // full width — the knob's own travel is inset 8px each side (half its
-      // 16px width), so measuring against the full box overshoots the knob's
-      // actual center by up to 8px at the high end. Needs the track already
-      // attached to the document (a detached element measures 0-width), so
-      // this can't run until after el.appendChild(wrap) below.
+      // Fill width is a CSS calc(), not a JS-measured pixel snapshot: the
+      // knob's own travel is inset 8px each side (half its 16px width), so a
+      // plain width:X% (relative to the track's full box) overshoots the
+      // knob's true center by up to 8px at the high end — calc(X% - Npx)
+      // corrects for that AND, unlike a getBoundingClientRect() snapshot, is
+      // re-evaluated live by the browser on every layout change, so it can
+      // never go stale relative to the knob (which the browser also
+      // continuously repositions live) even if the page's layout is still
+      // settling — e.g. right after a fresh reload.
       const sync=()=>{
         const val=parseInt(slider.value,10);
         const zone=zoneOf(val);
         const pct=maxMB?Math.min(1,val/maxMB):0;
-        const travel=Math.max(0, track.getBoundingClientRect().width-16);
-        fill.style.width=(pct*travel)+'px';
+        fill.style.width='calc('+(pct*100)+'% - '+(pct*16)+'px)';
         fill.className='vram-track-fill'+(zone?' '+zone:'');
         label.textContent=val+' MB ('+Math.round(pct*100)+'%)';
         // Set is disabled either because the current position is unsafe (red
@@ -2533,7 +2534,7 @@ function renderAgentLocal(){
       };
       slider.oninput=sync;   // live readout + color while dragging — no persistence per nudge
       setBtn.onclick=()=>{ lsSet('loveide:qwenVramMB', slider.value); toast('VRAM budget set to '+slider.value+' MB'); sync(); };
-      deferredSync=sync;
+      sync();   // no DOM measurement needed, so this can run immediately — no attach-then-sync dance
 
       if(startMB!==savedMB) lsSet('loveide:qwenVramMB', String(startMB));   // no saved value yet, or a re-measurement came back smaller than a stale saved one — persist the recalculated default so agentPickContextWindow never reads a now-too-large number
       wrap.appendChild(elem('div',{class:'agent-row-label',style:'margin-top:8px',text:'Allocate to Qwen'}));
@@ -2541,7 +2542,6 @@ function renderAgentLocal(){
       wrap.appendChild(elem('div',{class:'kv-desc',style:'margin-top:4px',text:'Takes effect next time Qwen is activated in VRAM.'}));
     }
     el.appendChild(wrap);
-    if(deferredSync) deferredSync();   // first paint, now that the track is actually laid out and measurable
     // Divider goes AFTER the whole WebLLM Agents group (model row, status, VRAM
     // budget) — it's the boundary before API Agents, not a split within WebLLM's
     // own section.
