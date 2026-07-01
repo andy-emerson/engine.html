@@ -2461,7 +2461,7 @@ function renderAgentLocal(){
   // flat AGENT_CTX_WINDOW default — see agentPickContextWindow().
   if(gpuOk){
     const v=agent.vram;
-    const wrap=elem('div',{style:'margin-top:14px;padding-top:12px;border-top:.5px solid var(--border-faint)'});
+    const wrap=elem('div',{style:'margin-top:14px'});
     wrap.appendChild(elem('div',{class:'agent-field-label',text:'VRAM budget'}));
     const measureBtn=elem('button',{class:'kv-btn',text:v.testing?'Measuring…':'Measure VRAM'});
     measureBtn.disabled=v.testing||busy;
@@ -2473,19 +2473,28 @@ function renderAgentLocal(){
     if(v.error) wrap.appendChild(elem('div',{style:'font-size:11px;color:var(--fn-red);margin-top:4px;word-break:break-word',text:v.error}));
     if(v.resultMB!=null && !v.testing){
       const savedMB=parseInt(lsGet('loveide:qwenVramMB',''),10);
-      const defaultMB=Math.round(v.resultMB*0.85);
-      const startMB=(savedMB && savedMB<=v.resultMB) ? savedMB : defaultMB;
-      const alloc=elem('input',{type:'number',class:'agent-input',min:'512',max:String(v.resultMB),step:'128'});
-      alloc.value=startMB;
-      alloc.onchange=()=>{
-        const n=Math.max(512, Math.min(v.resultMB, parseInt(alloc.value,10)||defaultMB));
-        alloc.value=n; lsSet('loveide:qwenVramMB', String(n));
-      };
+      // Slider tops out under the full measurement — mandatory headroom for the
+      // browser/OS/compositor, never offer "all of it." Default sits a touch
+      // below that ceiling, leaving room to nudge up if you deliberately want to.
+      const sliderMax=Math.max(512, Math.round(v.resultMB*0.9));
+      const defaultMB=Math.min(sliderMax, Math.round(v.resultMB*0.85));
+      const startMB=(savedMB && savedMB<=sliderMax) ? savedMB : defaultMB;
+      const slider=elem('input',{type:'range',min:'0',max:String(sliderMax),step:'128',style:'flex:1'});
+      slider.value=startMB;
+      const label=elem('span',{class:'kv-desc',style:'min-width:70px;text-align:right',text:startMB+' MB'});
+      slider.oninput=()=>{ label.textContent=slider.value+' MB'; };   // live readout while dragging — no persistence per nudge
+      const setBtn=elem('button',{class:'kv-btn',text:'Set'});
+      setBtn.onclick=()=>{ lsSet('loveide:qwenVramMB', slider.value); toast('VRAM budget set to '+slider.value+' MB'); };
       if(startMB!==savedMB) lsSet('loveide:qwenVramMB', String(startMB));   // no saved value yet, or a re-measurement came back smaller than a stale saved one — persist the recalculated default so agentPickContextWindow never reads a now-too-large number
-      wrap.appendChild(elem('div',{class:'agent-row',style:'margin-top:8px'},[ elem('span',{class:'agent-row-label',text:'Allocate to Qwen'}), alloc, elem('span',{class:'kv-desc',text:'MB'}) ]));
+      wrap.appendChild(elem('div',{class:'agent-row-label',style:'margin-top:8px',text:'Allocate to Qwen'}));
+      wrap.appendChild(elem('div',{class:'agent-row',style:'margin-top:4px'},[slider,label,setBtn]));
       wrap.appendChild(elem('div',{class:'kv-desc',style:'margin-top:4px',text:'Takes effect next time Qwen is activated in VRAM.'}));
     }
     el.appendChild(wrap);
+    // Divider goes AFTER the whole WebLLM Agents group (model row, status, VRAM
+    // budget) — it's the boundary before API Agents, not a split within WebLLM's
+    // own section.
+    el.appendChild(elem('div',{style:'margin-top:14px;padding-top:12px;border-top:.5px solid var(--border-faint)'}));
   }
   syncAgentPill();
 }
