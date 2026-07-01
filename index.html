@@ -2185,7 +2185,13 @@ async function agentRefreshModels(p){
   renderAgentRemote();
   try{
     const res=await fetch(p.listModelsUrl,{headers:p.authHeaders(key)});
-    if(!res.ok) throw new Error('HTTP '+res.status);
+    if(!res.ok){
+      // The status code alone ("HTTP 403") isn't enough to debug — providers
+      // put the actual reason in the body. Surface it (truncated; it's just
+      // for a human to read, not parsed).
+      let detail=''; try{ detail=(await res.text()).slice(0,300); }catch(e){}
+      throw new Error('HTTP '+res.status+(detail?': '+detail:''));
+    }
     const json=await res.json();
     agentModelState[p.id]={status:'ready',models:p.parseModels(json),error:''};
   }catch(e){
