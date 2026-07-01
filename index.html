@@ -500,7 +500,13 @@ body { font-family: var(--font-sans); background: var(--bg-tertiary); color: var
 /* ════════════════════════════════════════════════════════════════════════════
  * 9. MARKDOWN OUTPUT  (ported from the oracle)
  * ════════════════════════════════════════════════════════════════════════════ */
-.out-md { color: var(--text-primary); }
+/* white-space:normal overrides .chat-msg's pre-wrap (needed for plain-text user
+ * bubbles, wrong here): marked.js's real HTML output is pretty-printed with a
+ * literal newline between every block tag, and pre-wrap renders each one as a
+ * forced blank line on top of the real CSS margins below — doubled, uneven
+ * spacing. Semantic HTML doesn't need raw-whitespace preservation; its own tags
+ * already carry the line breaks. */
+.out-md { color: var(--text-primary); white-space: normal; }
 .out-md h1 { font-size: 22px; font-weight: 600; margin: 4px 0 12px; border-bottom: .5px solid var(--border-faint); padding-bottom: .2em; }
 .out-md h2 { font-size: 17px; font-weight: 600; margin: 16px 0 7px; border-bottom: .5px solid var(--border-faint); padding-bottom: .2em; }
 .out-md h3 { font-size: 14px; font-weight: 600; margin: 13px 0 5px; }
@@ -605,7 +611,7 @@ input[type=file] { display: none; }
         <div id="lib-list" style="flex:1;overflow-y:auto"></div>
       </div>
       <div class="pane-panel" id="panel-assistant" data-tab="assistant">
-        <div class="pane-header">AI assistant</div>
+        <div class="pane-header">AI assistant <span style="display:flex;gap:8px"><span class="mini" id="chat-copy" title="Copy conversation" data-ico="copy"></span><span class="mini" id="chat-clear" title="Clear conversation" data-ico="trash"></span></span></div>
         <div id="assistant-body" style="flex:1;min-height:0;display:flex;flex-direction:column"></div>
       </div>
       <div class="pane-panel" id="panel-history" data-tab="history">
@@ -2142,7 +2148,7 @@ const AGENT_MODELS = [
   { id:'Qwen2.5-Coder-3B-Instruct-q4f16_1-MLC',   family:'Qwen 2.5', tier:'Balanced', diskMB:1600, vramMB:2505 },
   { id:'Qwen2.5-Coder-7B-Instruct-q4f16_1-MLC',   family:'Qwen 2.5', tier:'Expert',   diskMB:4300, vramMB:5107 },
 ];
-const agent = { gpu:null, llm:null, engine:null, installed:new Set(), installedChecked:false, activeId:null, busyId:null, op:'', progress:'', generating:false, error:'', messages:[] };
+const agent = { gpu:null, llm:null, engine:null, installed:new Set(), installedChecked:false, activeId:null, busyId:null, op:'', progress:'', generating:false, error:'', messages:[], cancel:null };
 function agentLabelFor(id){ const m=AGENT_MODELS.find(x=>x.id===id); return m?(m.family+' ('+m.tier+')'):id; }
 function agentErr(e){ return (e&&e.message)?e.message:String(e); }
 
@@ -2493,9 +2499,13 @@ function renderAgentTab(){
   const msgs=elem('div',{class:'chat-msgs',id:'agent-messages'});
   const names=[hasLocal?'Qwen':null, remoteP?remoteP.agent:null].filter(Boolean).join(' + ');
   const ta=elem('textarea',{rows:'1',placeholder:'Ask '+names+'…',id:'agent-input'});
-  const send=elem('button',{html:svg('send'),title:'Send'});
+  const send=elem('button',{html:svg(agent.generating?'stop':'send'),title:agent.generating?'Stop':'Send',id:'agent-send'});
   const submit=()=>{ if(!agent.generating){ agentSend(ta.value); ta.value=''; } };
-  send.onclick=submit; ta.addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); submit(); } });
+  send.onclick=()=>{ if(agent.generating) agentCancel(); else submit(); };
+  ta.addEventListener('keydown',e=>{
+    if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); submit(); }
+    else if(e.key==='Escape'&&agent.generating){ e.preventDefault(); agentCancel(); }
+  });
   // Draggable divider: grab the line and drag up to enlarge the input (down to shrink).
   // Listeners attach only during a drag, so re-renders don't accumulate them.
   const resizer=elem('div',{class:'chat-resizer',title:'Drag to resize'});
@@ -2539,6 +2549,19 @@ function decorateCodeBlocks(container){
     btn.onclick=()=>{ navigator.clipboard.writeText(raw).then(()=>toast('Copied')).catch(()=>toast('Copy failed','err')); };
     pre.appendChild(btn);
   });
+}
+// Copy/Clear for the transcript — same affordance the Console already has
+// (clearConsole/copyConsole), and a step toward keeping full-history sends
+// (buildContext's remote budget) from growing unbounded: an abandoned or
+// no-longer-useful conversation is a manual click away from being gone.
+function clearChat(){
+  if (agent.generating) return;   // don't clear out from under an in-flight response
+  agent.messages=[]; renderAgentMessages();
+}
+function copyChat(){
+  if (!agent.messages.length){ toast('Conversation is empty'); return; }
+  const text=agent.messages.map(m=> m.role==='sys' ? '['+m.content+']' : (m.from||m.role)+': '+m.content).join('\n\n');
+  navigator.clipboard.writeText(text).then(()=>toast('Conversation copied')).catch(()=>toast('Copy failed','err'));
 }
 function renderAgentMessages(){
   const box=$('#agent-messages'); if(!box) return; box.innerHTML='';
@@ -2619,6 +2642,13 @@ function buildContext(budgetTokens, consoleLines){
 //     deliberate no-op for now (send the user's raw message + full Sight,
 //     unmodified) — a sys-line marks the handoff, then the remote's real reply
 //     is what's shown. See design.md for the fuller rationale.
+// Swaps the send button between Send and Stop — called only at generation
+// start/stop (not every streamed chunk; renderAgentMessages() already does
+// that far too often to also rebuild this on every call).
+function syncSendButton(){
+  const b=$('#agent-send'); if(!b) return;
+  b.innerHTML=svg(agent.generating?'stop':'send'); b.title=agent.generating?'Stop':'Send';
+}
 async function agentSend(text){
   text=(text||'').trim();
   if(!text || agent.generating) return;
@@ -2629,17 +2659,53 @@ async function agentSend(text){
   // that genuinely can't afford it, and buildContext's digest fallback (not
   // history truncation) is what protects that.
   const history=agent.messages.filter(m=>m.role==='user'||m.role==='assistant').map(m=>({role:m.role,content:m.content}));
+  // cancel = this turn's cancellation token: turnStart lets agentCancel() drop
+  // everything this turn appended (user msg, sys line, placeholder — however
+  // many) in one slice; text lets it restore what you typed; abortController is
+  // filled in by whichever leg (local/remote) actually starts running. Captured
+  // as myCancel too — agentCancel() flips agent.generating back to false and
+  // lets a NEW turn start before this async chain has actually unwound (waiting
+  // on interruptGenerate()/an aborted fetch to settle), so the trailing cleanup
+  // below must only touch shared agent state if it still belongs to THIS turn.
+  const myCancel=agent.cancel={ turnStart:agent.messages.length, text, cancelled:false, abortController:null };
   agent.messages.push({role:'user',from:'user',content:text});
-  agent.generating=true; renderAgentMessages(); syncAgentPill();
+  agent.generating=true; renderAgentMessages(); syncAgentPill(); syncSendButton();
   const convo=[...history, {role:'user',content:text}];
   try {
-    if(hasLocal && remoteP) await agentSendPipeline(convo, remoteP);
-    else if(hasLocal) await agentSendLocal(convo);
-    else await agentSendRemote(convo, remoteP);
-  } catch(e){ console.error('[agent] send failed',e); }
-  agent.generating=false; syncAgentPill();
+    if(hasLocal && remoteP) await agentSendPipeline(convo, remoteP, myCancel);
+    else if(hasLocal) await agentSendLocal(convo, myCancel);
+    else await agentSendRemote(convo, remoteP, myCancel);
+  } catch(e){ if(!myCancel.cancelled) console.error('[agent] send failed',e); }
+  if (agent.cancel===myCancel){ agent.generating=false; agent.cancel=null; syncAgentPill(); syncSendButton(); }
 }
-async function agentSendLocal(history){
+// "Pulled back" cancel: the whole turn (your message, any sys line, the
+// in-progress reply) is dropped as if it never happened, and your original
+// text goes back in the input for editing. Chosen over "leave it sent" because
+// buildContext() now resends the FULL chat history on every remote call — an
+// abandoned turn left sitting in the transcript keeps costing tokens forever,
+// not just once. Updates agent.generating/messages/UI immediately, synchronously
+// — the actual interrupt/abort is fire-and-forget below it, since a real GPU
+// interrupt or network abort can take a moment and shouldn't block the button
+// flipping back. agent.cancel itself is intentionally left in place (cancelled:
+// true, not nulled) so the in-flight generation functions still see it on their
+// next check; agentSend()'s own trailing cleanup nulls it once that chain ends.
+async function agentCancel(){
+  const c=agent.cancel; if(!c || c.cancelled) return;
+  c.cancelled=true;
+  if (c.abortController) c.abortController.abort();
+  if (agent.engine) agent.engine.interruptGenerate().catch(()=>{});
+  agent.messages.length=c.turnStart;
+  agent.generating=false;
+  renderAgentMessages(); syncAgentPill(); syncSendButton();
+  const ta=$('#agent-input'); if(ta){ ta.value=c.text; ta.focus(); }
+}
+// Every function below takes myCancel (the specific token agentSend() created
+// for this turn) and checks THAT, never the shared agent.cancel global — by the
+// time an in-flight call's next check runs, agent.cancel may already belong to
+// a newer turn (agentCancel() lets a new send start before this one has actually
+// unwound), so re-reading the global here would misjudge whose turn is cancelled.
+async function agentSendLocal(history, myCancel){
+  if (myCancel.cancelled) return;
   agent.messages.push({role:'assistant',from:'Qwen',content:''});
   const idx=agent.messages.length-1;
   renderAgentMessages();
@@ -2648,40 +2714,48 @@ async function agentSendLocal(history){
     const convo=[{role:'system',content:AGENT_SYSTEM+"\n\n"+ctx}, ...history];
     const chunks=await agent.engine.chat.completions.create({ messages:convo, stream:true });
     let acc='';
-    for await (const chunk of chunks){ acc += (chunk&&chunk.choices&&chunk.choices[0]&&chunk.choices[0].delta&&chunk.choices[0].delta.content)||''; agent.messages[idx].content=acc; renderAgentMessages(); }
-  } catch(e){ agent.messages[idx].content='⚠️ '+agentErr(e); console.error('[WebLLM] generate failed',e); renderAgentMessages(); }
+    for await (const chunk of chunks){
+      if (myCancel.cancelled) return;   // interruptGenerate() is cooperative — stop touching messages the instant we know
+      acc += (chunk&&chunk.choices&&chunk.choices[0]&&chunk.choices[0].delta&&chunk.choices[0].delta.content)||''; agent.messages[idx].content=acc; renderAgentMessages();
+    }
+  } catch(e){ if(!myCancel.cancelled){ agent.messages[idx].content='⚠️ '+agentErr(e); console.error('[WebLLM] generate failed',e); renderAgentMessages(); } }
 }
 // One request, no stream (each provider has a different SSE shape to parse —
 // deferred until the basic pipeline is proven out; see design.md).
-async function remoteChat(p, model, system, history){
+async function remoteChat(p, model, system, history, signal){
   const key=getSecret('agent:'+p.id+':'+p.fields[0].key);
-  const res=await fetch(p.chatUrl, { method:'POST', headers:Object.assign({'Content-Type':'application/json'}, p.authHeaders(key)), body:JSON.stringify(p.buildChatBody(model, system, history)) });
+  const res=await fetch(p.chatUrl, { method:'POST', headers:Object.assign({'Content-Type':'application/json'}, p.authHeaders(key)), body:JSON.stringify(p.buildChatBody(model, system, history)), signal });
   if(!res.ok){
     let detail=''; try{ detail=(await res.text()).slice(0,300); }catch(e){}
     throw new Error('HTTP '+res.status+(detail?': '+detail:''));
   }
   return p.parseChatReply(await res.json());
 }
-async function agentSendRemote(history, p){
+async function agentSendRemote(history, p, myCancel){
+  if (myCancel.cancelled) return;
   agent.messages.push({role:'assistant',from:p.agent,content:''});
   const idx=agent.messages.length-1;
   renderAgentMessages();
+  const controller=new AbortController();
+  myCancel.abortController=controller;
   try {
     const model=remoteActiveModel(p.id);
     if(!model) throw new Error('No model selected for '+p.agent);
     const ctx=buildContext(Infinity, Infinity);   // remote context windows are large; send everything
-    const reply=await remoteChat(p, model, AGENT_SYSTEM+"\n\n"+ctx, history);
+    const reply=await remoteChat(p, model, AGENT_SYSTEM+"\n\n"+ctx, history, controller.signal);
+    if (myCancel.cancelled) return;   // reply arrived after cancel already truncated agent.messages — discard, don't resurrect it
     agent.messages[idx].content=reply||'(empty response)';
-  } catch(e){ agent.messages[idx].content='⚠️ '+agentErr(e); console.error('['+p.provider+'] chat failed',e); }
+  } catch(e){ if(!myCancel.cancelled){ agent.messages[idx].content='⚠️ '+agentErr(e); console.error('['+p.provider+'] chat failed',e); } }
   renderAgentMessages();
 }
 // The 2-agent handoff: no fabricated/hardcoded dialogue attributed to Qwen (there's
 // no real local inference in this step, so there's nothing genuine for it to say) —
 // just a sys-styled line naming the pipeline transition, then the remote's real reply.
-async function agentSendPipeline(history, p){
+async function agentSendPipeline(history, p, myCancel){
+  if (myCancel.cancelled) return;
   agent.messages.push({role:'sys',content:'Qwen → '+p.agent});
   renderAgentMessages();
-  await agentSendRemote(history, p);
+  await agentSendRemote(history, p, myCancel);
 }
 async function initAgent(){
   renderAgentTab();
@@ -3024,6 +3098,8 @@ function wire(){
   $('#snap-clear').onclick=()=>{ if(confirm('Clear all snapshots?')){ nb.history=[]; persistHistory(); renderHistory(); renderStorage(); toast('Snapshots cleared'); } };
   $('#console-clear').onclick=clearConsole;
   $('#console-copy').onclick=copyConsole;
+  $('#chat-clear').onclick=clearChat;
+  $('#chat-copy').onclick=copyChat;
   $('#st-agent').onclick=()=>openTab('assistant');
   const ln=$('#opt-linenums'); ln.checked=nb.opts.lineNumbers; ln.onchange=()=>{ nb.opts.lineNumbers=ln.checked; lsSet(LS.opts,JSON.stringify(nb.opts)); renderNotebook(); };
   setupPane('left'); setupPane('right'); wireActivityBars(); wireRightResizers();
