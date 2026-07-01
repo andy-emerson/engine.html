@@ -2132,20 +2132,29 @@ const agent = { gpu:null, llm:null, engine:null, installed:new Set(), installedC
 function agentLabelFor(id){ const m=AGENT_MODELS.find(x=>x.id===id); return m?(m.family+' ('+m.tier+')'):id; }
 function agentErr(e){ return (e&&e.message)?e.message:String(e); }
 
-/* ── Remote agents — UI shell only (Settings → Agentic Coding). Each row is
- *    add-on-demand: pick a provider, Add, fill in what it needs. No backend
- *    call is wired yet, so every provider's `models` starts empty on purpose —
- *    an empty dropdown reads as "nothing to pick yet," which is honest; a
- *    placeholder option (or Anthropic's real list) would have implied a fetch
- *    already happens. (Anthropic's real, dependency-verified IDs are
- *    claude-opus-4-8 / claude-sonnet-5 / claude-haiku-4-5 — for when the
- *    fetch-and-populate wiring lands, not to hardcode now.) Scoped to the
- *    three providers testable right now; Mistral / Meta Llama / Gemini are in
- *    TODO.md, already confirmed CORS-reachable whenever they're added back. ── */
+/* ── Remote agents (Settings → Agentic Coding). Each row is add-on-demand:
+ *    pick a provider, Add, fill in what it needs. Committing a key fetches
+ *    that provider's live model list — no hardcoded/guessed model IDs. Still
+ *    NOT wired: actually chatting with one (that's the toggle's future job).
+ *    Scoped to the three providers testable right now; Mistral / Meta Llama /
+ *    Gemini are in TODO.md, already confirmed CORS-reachable when added back. ── */
 const AGENT_PROVIDERS = [
-  { id:'anthropic', agent:'Claude',   provider:'Anthropic', fields:[{key:'apiKey',label:'API key'}], models:[] },
-  { id:'openai',    agent:'ChatGPT',  provider:'OpenAI',    fields:[{key:'apiKey',label:'API key'}], models:[] },
-  { id:'xai',       agent:'Grok',     provider:'xAI',       fields:[{key:'apiKey',label:'API key'}], models:[] },
+  { id:'anthropic', agent:'Claude',  provider:'Anthropic', fields:[{key:'apiKey',label:'API key'}],
+    listModelsUrl:'https://api.anthropic.com/v1/models',
+    authHeaders:key=>({ 'x-api-key':key, 'anthropic-version':'2023-06-01', 'anthropic-dangerous-direct-browser-access':'true' }),
+    parseModels:json=>(json.data||[]).map(m=>({ id:m.id, label:m.display_name||m.id })) },
+  { id:'openai',    agent:'ChatGPT', provider:'OpenAI',    fields:[{key:'apiKey',label:'API key'}],
+    listModelsUrl:'https://api.openai.com/v1/models',
+    authHeaders:key=>({ 'Authorization':'Bearer '+key }),
+    // /v1/models lists every OpenAI model (embeddings, whisper, tts, dall-e,
+    // moderation, ...), not just chat-capable ones — filtered to the chat
+    // families by ID prefix. Heuristic, unverified against a real key; refine
+    // once tested live.
+    parseModels:json=>(json.data||[]).filter(m=>/^(gpt-|o1|o3|o4|chatgpt)/.test(m.id)).map(m=>({ id:m.id, label:m.id })) },
+  { id:'xai',       agent:'Grok',    provider:'xAI',       fields:[{key:'apiKey',label:'API key'}],
+    listModelsUrl:'https://api.x.ai/v1/models',
+    authHeaders:key=>({ 'Authorization':'Bearer '+key }),
+    parseModels:json=>(json.data||[]).map(m=>({ id:m.id, label:m.id })) },
 ];
 // "Claude (Anthropic)" — but just "Mistral" when the agent and provider names
 // would otherwise repeat.
@@ -2157,15 +2166,41 @@ function agentHeading(p){ return p.agent.toLowerCase()===p.provider.toLowerCase(
 // on the next reload unless Commit actually saved something.
 function agentIsConfigured(p){ return p.fields.every(f=>!!getSecret('agent:'+p.id+':'+f.key)); }
 const remoteSessionAdded = new Set();
-// Boot-time hygiene: drop any secret or active-agent pointer for a provider
-// this version no longer supports — a retired/renamed provider shouldn't
-// leave a live credential sitting in IndexedDB indefinitely.
-async function purgeOrphanedAgentSecrets(){
+// Live model list per provider — in-memory only (refetched at boot and on
+// every Commit, never persisted): { status: 'idle'|'loading'|'ready'|'error',
+// models, error }. Same fetch fires from Commit and from the boot-time sync
+// below — one function, two call sites, not two implementations.
+const agentModelState = {};
+async function agentRefreshModels(p){
+  const key=getSecret('agent:'+p.id+':'+p.fields[0].key);
+  if(!key){ agentModelState[p.id]={status:'idle',models:[],error:''}; renderAgentRemote(); return; }
+  agentModelState[p.id]={status:'loading',models:[],error:''};
+  renderAgentRemote();
+  try{
+    const res=await fetch(p.listModelsUrl,{headers:p.authHeaders(key)});
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const json=await res.json();
+    agentModelState[p.id]={status:'ready',models:p.parseModels(json),error:''};
+  }catch(e){
+    // A CORS/network failure surfaces to JS as a generic "Failed to fetch" —
+    // the browser hides the real reason for security; that's not a bug here.
+    agentModelState[p.id]={status:'error',models:[],error:agentErr(e)};
+  }
+  renderAgentRemote();
+}
+// Boot-time hygiene AND population, in one pass: (1) drop any secret or
+// active-agent pointer for a provider this version no longer supports —
+// fast/local; (2) for every remaining configured agent, refresh its model
+// list live — the same action Commit triggers, just run automatically on
+// load. Not awaited by boot() (see call site) so slow/failed 3rd-party
+// requests never block app startup.
+async function syncAgentSecrets(){
   const supported=new Set(AGENT_PROVIDERS.map(p=>p.id));
   const stale=listSecrets().filter(k=>{ const m=/^agent:([^:]+):/.exec(k); return m && !supported.has(m[1]); });
   for (const k of stale) await deleteSecret(k);
   const activeId=lsGet('loveide:activeRemoteAgent','');
   if(activeId && !supported.has(activeId)) lsSet('loveide:activeRemoteAgent','');
+  await Promise.all(AGENT_PROVIDERS.filter(agentIsConfigured).map(agentRefreshModels));
 }
 
 async function detectWebGPU(){
@@ -2297,12 +2332,12 @@ function renderAgentLocal(){
 // then each visible agent's own block — heading, its requirement fields (API
 // key, etc.) with Commit/Remove, then the model + activate toggle. Fields come
 // before the model row since the model list only exists once a key is committed
-// (shell for now: Commit just saves the field — see TODO.md for the fetch-and-
-// populate wiring). A row is visible if it's configured (has a saved secret —
-// survives reload) or was just Added this session (remoteSessionAdded, does
-// NOT survive reload — an in-progress add you never Committed should vanish,
-// not linger with empty fields). Toggling off keeps the row and its secret;
-// Remove deletes both and drops it from remoteSessionAdded too.
+// — Commit saves to Secrets *and* fetches that provider's live model list
+// (agentRefreshModels). A row is visible if it's configured (has a saved
+// secret — survives reload) or was just Added this session (remoteSessionAdded,
+// does NOT survive reload — an in-progress add you never Committed should
+// vanish, not linger with empty fields). Toggling off keeps the row and its
+// secret; Remove deletes both and drops it from remoteSessionAdded too.
 function renderAgentRemote(){
   const el=$('#agent-remote'); if(!el) return;
   el.innerHTML='';
@@ -2345,28 +2380,43 @@ function renderAgentRemote(){
       if(existing) inp.value=existing;
       return inp;
     });
-    const commitBtn=elem('button',{class:'kv-btn commit',text:'Commit'});
+    const st=agentModelState[id]||{status:'idle',models:[],error:''};
+    const commitBtn=elem('button',{class:'kv-btn commit',text:'Commit'}); commitBtn.disabled=st.status==='loading';
     commitBtn.onclick=async()=>{
       for(let i=0;i<p.fields.length;i++) await setSecret('agent:'+id+':'+p.fields[i].key, fieldEls[i].value);
-      renderAgentRemote();
+      await agentRefreshModels(p);
     };
     const removeBtn=elem('button',{class:'kv-btn remove',text:'Remove'});
     removeBtn.onclick=async()=>{
       for(const f of p.fields) await deleteSecret('agent:'+id+':'+f.key);
       remoteSessionAdded.delete(id);
+      delete agentModelState[id];
       if(activeId===id) lsSet('loveide:activeRemoteAgent','');
       renderAgentRemote();
     };
     wrap.appendChild(elem('div',{class:'agent-row',style:'margin:7px 0'},[...fieldEls,commitBtn,removeBtn]));
 
+    // Model dropdown reflects the live fetch, not a hardcoded/guessed list —
+    // empty until a key's committed, "Loading…"/error while a request is in
+    // flight or failed, real options only once one succeeds.
     const sel=elem('select',{class:'agent-select'});
-    p.models.forEach(m=>sel.appendChild(elem('option',{value:m.id,text:m.label})));
-    if(p.models[0]) sel.value=p.models[0].id;
+    if(st.status==='loading'){
+      sel.disabled=true;
+      sel.appendChild(elem('option',{value:'',text:'Loading models…'}));
+    } else if(st.status==='error'){
+      sel.disabled=true;
+      sel.appendChild(elem('option',{value:'',text:"Couldn't load models"}));
+    } else {
+      st.models.forEach(m=>sel.appendChild(elem('option',{value:m.id,text:m.label})));
+      if(st.models[0]) sel.value=st.models[0].id;
+    }
 
-    const hasFields=agentIsConfigured(p);
-    const cb=elem('input',{type:'checkbox',class:'switch',title:'Active'}); cb.checked=activeId===id; cb.disabled=!hasFields;
+    const ready=st.status==='ready'&&st.models.length>0;
+    const cb=elem('input',{type:'checkbox',class:'switch',title:'Active'}); cb.checked=activeId===id; cb.disabled=!ready;
     cb.onchange=()=>{ lsSet('loveide:activeRemoteAgent', cb.checked?id:''); renderAgentRemote(); };
     wrap.appendChild(elem('div',{class:'agent-row'},[sel,cb]));
+
+    if(st.status==='error') wrap.appendChild(elem('div',{style:'font-size:11px;color:var(--fn-red);margin-top:4px;word-break:break-word',text:st.error}));
 
     el.appendChild(wrap);
   });
@@ -2834,7 +2884,7 @@ async function boot(){
   paintIcons();
   LoveIDETheme.init({ paperSlider:'#paper', inkSlider:'#ink', levelEl:'#paper-level', pctEl:'#paper-pct' });
   await loadAll();
-  await purgeOrphanedAgentSecrets();
+  syncAgentSecrets().catch(e=>console.error('[agents] sync failed',e));   // not awaited — see function comment
   wire();
   initSettingsSections();
   renderNotebook();
