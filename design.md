@@ -82,7 +82,7 @@ Mirrors the numbered banner sections in `index.html` (JS sections 0–10).
 | 5 | CodeMirror | Lua editor on demand; textarea fallback | `loadCM` |
 | 6 | Cell DOM | Render/edit/reorder cells; markdown WYSIWYG | cell render + drag-to-reorder |
 | 6b | Activity panels | Outline, Libraries (require()-driven, add-by-URL) | panel renderers |
-| 6c | Agent (WebLLM) | In-browser model manager + streaming chat + real Sight | `detectWebGPU`, `initAgent`, agent manager + chat, `buildContext` |
+| 6c | Agent | Local WebLLM (in-browser model manager + streaming chat) and remote API agents (Anthropic/OpenAI/xAI), unified by a group-chat router; real Sight | `detectWebGPU`, `initAgent`, `AGENT_PROVIDERS`, `agentSend`, `remoteChat`, `buildContext` |
 | 7 | Runtime | Build `.love`, boot via 2dengine/love.js | `RT`, `playerHTML`, `run`, `buildLoveBlob` |
 | 8 | Export | `.love` download | `exportLove` |
 | 9 | Self-tests | Doc-model invariants run on demand (Tests button) | `runSelfTests` |
@@ -185,8 +185,9 @@ Coarse, per-subsystem. Status is the highest claim rung currently justified.
 | Export `.love` | **D** | JSZip build incl. main.lua + conf + assets + libs. Download path browser-only. |
 | conf.lua | **B** | `generateConfLua`, defaults, Game-settings panel. |
 | Agent — local | **browser-only** | WebLLM manager (Qwen2.5-Coder 1.5B/3B/7B), install/activate, VRAM gate, streaming chat. Untestable in sandbox (no GPU). |
-| Agent — Sight | **T** (branching) / **browser-only** (e2e) | `buildContext()`: full current `main.lua` + conf + recent Console each turn, bounded history, luaDigest fallback when over budget; `context_window_size` raised to 8192 at load. Full-vs-digest branching tested headless; window override is dependency-reasoned, not run. |
-| Agent — Hands/Modes/Backends | **S** | Designed in `TODO.md`; not built. |
+| Agent — Sight | **T** (branching) / **browser-only** (e2e) | `buildContext()`: full current `main.lua` + conf + recent Console each turn, luaDigest fallback when over budget for local's small window (`AGENT_SIGHT_BUDGET`); remote calls pass no budget (full source, full console, no digest). `context_window_size` raised to 8192 at local load. History is no longer capped for either backend — a deliberate simplification, see `TODO.md`'s Open Question 4 for the local-overflow risk it trades in. Full-vs-digest branching tested headless; window override is dependency-reasoned, not run. |
+| Agent — remote chat | **T** (routing) / **S** (live calls) | `agentSend()` routes 0/1/2 active agents (one local + one remote, independently toggled) group-chat style — `agent.messages` carries a `from` field. 2-agent case pipelines local→remote: local's context-curation step is a deliberate no-op (full Sight, unmodified), marked by a code-generated `sys`-line ("Qwen → Claude"), never fabricated agent dialogue. `remoteChat()` calls Anthropic's `/v1/messages` and OpenAI/xAI's `/v1/chat/completions` directly from the browser, non-streaming. Routing (0/1/2-agent branch selection, error-body surfacing) tested headless against the real extracted functions — the live network calls are still Stated only, not yet exercised against a real key from this feature (the `/models`-list call on the same providers *is* browser-verified, from the Agentic Coding settings work). |
+| Agent — Hands/Modes | **S** | Designed in `TODO.md`; not built. |
 
 When a row's rung changes or a new divergence is decided, update it here in the
 same commit as the code change.

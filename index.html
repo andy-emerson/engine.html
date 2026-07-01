@@ -460,6 +460,7 @@ body { font-family: var(--font-sans); background: var(--bg-tertiary); color: var
 .chat-msg.user { background: var(--bg-tertiary); color: var(--text-primary); align-self: flex-end; }
 .chat-msg.bot { background: var(--bg-secondary); color: var(--text-primary); align-self: flex-start; }
 .chat-msg.sys { color: var(--text-tertiary); font-style: italic; align-self: center; text-align: center; font-size: 11px; }
+.chat-from { display: block; font-size: 10px; font-weight: 700; letter-spacing: .02em; opacity: .5; margin-bottom: 3px; }
 .chat-input { display: flex; gap: 5px; padding: 8px; }
 /* Draggable divider between the messages and the input — drag up to grow the field. */
 .chat-resizer { height: 7px; flex-shrink: 0; cursor: ns-resize; position: relative; }
@@ -2115,7 +2116,9 @@ function renderLibs(){
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
- * 6c. AGENT (WebLLM) — in-browser model manager + streaming chat, ported from the oracle.
+ * 6c. AGENT — local WebLLM (in-browser model manager + streaming chat, ported
+ *     from the oracle) and remote API agents (Anthropic/OpenAI/xAI), unified by
+ *     a group-chat-style router (agentSend) that fans out to 0/1/2 active agents.
  * ════════════════════════════════════════════════════════════════════════════ */
 /* Models: exactly the oracle's three Qwen2.5-Coder sizes (q4f16_1). One shared
  * MLCEngine holds one model at a time. Setup (GPU + install/activate/remove) lives
@@ -2143,7 +2146,12 @@ const AGENT_PROVIDERS = [
     keyUrl:'https://console.anthropic.com/settings/keys',
     listModelsUrl:'https://api.anthropic.com/v1/models',
     authHeaders:key=>({ 'x-api-key':key, 'anthropic-version':'2023-06-01', 'anthropic-dangerous-direct-browser-access':'true' }),
-    parseModels:json=>(json.data||[]).map(m=>({ id:m.id, label:m.display_name||m.id })) },
+    parseModels:json=>(json.data||[]).map(m=>({ id:m.id, label:m.display_name||m.id })),
+    // Anthropic's shape differs from the other two: system prompt is a top-level
+    // field (not a message with role:'system'), and max_tokens is required.
+    chatUrl:'https://api.anthropic.com/v1/messages',
+    buildChatBody:(model,system,history)=>({ model, max_tokens:4096, system, messages:history }),
+    parseChatReply:json=>(json.content||[]).map(b=>b.text||'').join('') },
   // "ChatGPT" is the recognizable brand, but the key it needs is a *Platform*
   // API key (platform.openai.com), a separate account/product from a ChatGPT
   // subscription and unrelated to Codex's OAuth login — keyUrl exists
@@ -2156,12 +2164,19 @@ const AGENT_PROVIDERS = [
     // moderation, ...), not just chat-capable ones — filtered to the chat
     // families by ID prefix. Heuristic, unverified against a real key; refine
     // once tested live.
-    parseModels:json=>(json.data||[]).filter(m=>/^(gpt-|o1|o3|o4|chatgpt)/.test(m.id)).map(m=>({ id:m.id, label:m.id })) },
+    parseModels:json=>(json.data||[]).filter(m=>/^(gpt-|o1|o3|o4|chatgpt)/.test(m.id)).map(m=>({ id:m.id, label:m.id })),
+    chatUrl:'https://api.openai.com/v1/chat/completions',
+    buildChatBody:(model,system,history)=>({ model, messages:[{role:'system',content:system}, ...history] }),
+    parseChatReply:json=>(json.choices&&json.choices[0]&&json.choices[0].message&&json.choices[0].message.content)||'' },
   { id:'xai',       agent:'Grok',    provider:'xAI',       fields:[{key:'apiKey',label:'API key'}],
     keyUrl:'https://console.x.ai',
     listModelsUrl:'https://api.x.ai/v1/models',
     authHeaders:key=>({ 'Authorization':'Bearer '+key }),
-    parseModels:json=>(json.data||[]).map(m=>({ id:m.id, label:m.id })) },
+    parseModels:json=>(json.data||[]).map(m=>({ id:m.id, label:m.id })),
+    // xAI's chat API is OpenAI-compatible — same request/response shape as ChatGPT.
+    chatUrl:'https://api.x.ai/v1/chat/completions',
+    buildChatBody:(model,system,history)=>({ model, messages:[{role:'system',content:system}, ...history] }),
+    parseChatReply:json=>(json.choices&&json.choices[0]&&json.choices[0].message&&json.choices[0].message.content)||'' },
 ];
 // "Claude (Anthropic)" — but just "Mistral" when the agent and provider names
 // would otherwise repeat.
@@ -2172,6 +2187,11 @@ function agentHeading(p){ return p.agent.toLowerCase()===p.provider.toLowerCase(
 // for this session only (remoteSessionAdded, in-memory), and it's gone again
 // on the next reload unless Commit actually saved something.
 function agentIsConfigured(p){ return p.fields.every(f=>!!getSecret('agent:'+p.id+':'+f.key)); }
+// Which remote agent (if any) is toggled active, and which of its models is
+// selected — both tiny prefs, so localStorage (not Secrets/IndexedDB).
+function remoteActiveId(){ return lsGet('loveide:activeRemoteAgent',''); }
+function remoteActiveProvider(){ const id=remoteActiveId(); return AGENT_PROVIDERS.find(p=>p.id===id)||null; }
+function remoteActiveModel(id){ return lsGet('loveide:remoteModel:'+id,''); }
 const remoteSessionAdded = new Set();
 // Live model list per provider — in-memory only (refetched at boot and on
 // every Commit, never persisted): { status: 'idle'|'loading'|'ready'|'error',
@@ -2278,7 +2298,7 @@ async function agentToggleVram(on){
 }
 function syncAgentPill(){
   if (agent.generating||agent.busyId) setAgent('loading');
-  else if (agent.activeId) setAgent('ready');
+  else if (agent.activeId||remoteActiveProvider()) setAgent('ready');
   else if (agent.error) setAgent('error');
   else setAgent('idle');
 }
@@ -2411,13 +2431,14 @@ function renderAgentRemote(){
       remoteSessionAdded.delete(id);
       delete agentModelState[id];
       if(activeId===id) lsSet('loveide:activeRemoteAgent','');
-      renderAgentRemote();
+      renderAgentRemote(); renderAgentTab();
     };
     wrap.appendChild(elem('div',{class:'agent-row',style:'margin:7px 0'},[...fieldEls,commitBtn,removeBtn]));
 
     // Model dropdown reflects the live fetch, not a hardcoded/guessed list —
     // empty until a key's committed, "Loading…"/error while a request is in
-    // flight or failed, real options only once one succeeds.
+    // flight or failed, real options only once one succeeds. Selection persists
+    // (loveide:remoteModel:<id>, a tiny pref) so chat knows which model to call.
     const sel=elem('select',{class:'agent-select'});
     if(st.status==='loading'){
       sel.disabled=true;
@@ -2427,12 +2448,17 @@ function renderAgentRemote(){
       sel.appendChild(elem('option',{value:'',text:"Couldn't load models"}));
     } else {
       st.models.forEach(m=>sel.appendChild(elem('option',{value:m.id,text:m.label})));
-      if(st.models[0]) sel.value=st.models[0].id;
+      if(st.models.length){
+        const saved=remoteActiveModel(id);
+        sel.value = st.models.some(m=>m.id===saved) ? saved : st.models[0].id;
+        lsSet('loveide:remoteModel:'+id, sel.value);
+      }
     }
+    sel.onchange=()=>lsSet('loveide:remoteModel:'+id, sel.value);
 
     const ready=st.status==='ready'&&st.models.length>0;
     const cb=elem('input',{type:'checkbox',class:'switch',title:'Active'}); cb.checked=activeId===id; cb.disabled=!ready;
-    cb.onchange=()=>{ lsSet('loveide:activeRemoteAgent', cb.checked?id:''); renderAgentRemote(); };
+    cb.onchange=()=>{ lsSet('loveide:activeRemoteAgent', cb.checked?id:''); renderAgentRemote(); renderAgentTab(); };
     wrap.appendChild(elem('div',{class:'agent-row'},[sel,cb]));
 
     if(st.status==='error') wrap.appendChild(elem('div',{style:'font-size:11px;color:var(--fn-red);margin-top:4px;word-break:break-word',text:st.error}));
@@ -2441,18 +2467,21 @@ function renderAgentRemote(){
   });
 }
 
-// Agent tab = chat.
+// Agent tab = chat. Available once either toggle (local VRAM-active, one remote
+// agent active) is on — the 0/1/2-agent routing lives in agentSend.
 function renderAgentTab(){
   const body=$('#assistant-body'); if(!body) return;
-  if(!agent.activeId){
+  const hasLocal=!!agent.activeId, remoteP=remoteActiveProvider();
+  if(!hasLocal && !remoteP){
     const loading=!!agent.busyId;
     body.innerHTML='';
-    body.appendChild(panePlaceholder('message-code', loading?'Loading model…':'No model active', loading?'See Settings → Agent':'Activate a model in Settings → Agent'));
+    body.appendChild(panePlaceholder('message-code', loading?'Loading model…':'No agent active', loading?'See Settings → Agentic Coding':'Activate an agent in Settings → Agentic Coding'));
     return;
   }
   body.innerHTML='';
   const msgs=elem('div',{class:'chat-msgs',id:'agent-messages'});
-  const ta=elem('textarea',{rows:'1',placeholder:'Ask '+agentLabelFor(agent.activeId)+'…',id:'agent-input'});
+  const names=[hasLocal?'Qwen':null, remoteP?remoteP.agent:null].filter(Boolean).join(' + ');
+  const ta=elem('textarea',{rows:'1',placeholder:'Ask '+names+'…',id:'agent-input'});
   const send=elem('button',{html:svg('send'),title:'Send'});
   const submit=()=>{ if(!agent.generating){ agentSend(ta.value); ta.value=''; } };
   send.onclick=submit; ta.addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); submit(); } });
@@ -2470,8 +2499,14 @@ function renderAgentMessages(){
   const box=$('#agent-messages'); if(!box) return; box.innerHTML='';
   if(!agent.messages.length){ box.appendChild(panePlaceholder('message-code','Ask about your game','It can see your main.lua, conf, and recent console')); return; }
   agent.messages.forEach(m=>{
+    // sys = a code-generated pipeline notice (e.g. the 2-agent handoff), not
+    // dialogue attributed to any agent — rendered plain, no markdown/label.
+    if(m.role==='sys'){ box.appendChild(elem('div',{class:'chat-msg sys',text:m.content})); return; }
     const el=elem('div',{class:'chat-msg '+(m.role==='user'?'user':'bot')});
-    if(m.role==='user') el.textContent=m.content; else el.innerHTML = m.content? renderMarkdownHTML(m.content) : '<span style="opacity:.5">…</span>';
+    if(m.role==='assistant' && m.from) el.appendChild(elem('div',{class:'chat-from',text:m.from}));
+    const bodyEl=elem('div');
+    if(m.role==='user') bodyEl.textContent=m.content; else bodyEl.innerHTML = m.content? renderMarkdownHTML(m.content) : '<span style="opacity:.5">…</span>';
+    el.appendChild(bodyEl);
     if(m.role==='assistant' && m.content){ const cm=/```lua\s*([\s\S]*?)```/.exec(m.content); if(cm){ const btn=elem('button',{class:'kv-btn',html:svg('insert')+'Insert as cell',style:'margin-top:6px'}); btn.onclick=()=>{ addCell('lua'); const c=nb.doc.cells[nb.doc.cells.length-1]; c.code=cm[1].replace(/\s+$/,''); renderNotebook(); toast('Inserted as new cell'); }; el.appendChild(btn); } }
     box.appendChild(el);
   });
@@ -2484,7 +2519,6 @@ const AGENT_SYSTEM = "You are a concise expert assistant for LÖVE (Love2D) game
 // (raise/lower per VRAM); the browser can't read free VRAM, so this is a manual dial.
 const AGENT_CTX_WINDOW   = 8192;  // context_window_size requested when a model loads
 const AGENT_SIGHT_BUDGET = 5200;  // token budget for the Sight brief (leaves room for history + reply)
-const AGENT_HISTORY_MAX  = 6;     // last N chat messages kept (full source is re-sent each turn)
 
 function estTokens(s){ return Math.ceil((s||'').length/4); }  // rough chars/4 heuristic
 
@@ -2494,7 +2528,9 @@ function confSummary(){
   return `title=${JSON.stringify(c.title||'Untitled')} identity=${c.identity||'loveide-game'} love=${c.version||'11.5'} window=${parseInt(c.width)||800}x${parseInt(c.height)||600}${c.resizable?' resizable':''}${c.fullscreen?' fullscreen':''} vsync=${c.vsync?1:0}`;
 }
 // Recent love.js Console output (print + errors) — the witness channel. Read from
-// the Console DOM so it reflects exactly what the human sees.
+// the Console DOM so it reflects exactly what the human sees. maxLines=Infinity
+// (remote/pipeline sends) returns everything since the last Run/clear — slice(-Infinity)
+// clamps to 0, i.e. the whole array; no special-casing needed.
 function recentConsole(maxLines){
   maxLines=maxLines||14;
   return $$('#console > div:not(.pane-placeholder)').slice(-maxLines)
@@ -2512,10 +2548,12 @@ function luaDigest(src){
 }
 // The curated brief sent as the system message each turn: full current main.lua +
 // conf + recent Console, rebuilt fresh. Digest fallback only if the source is too
-// big for the budget. Returns the brief text appended after AGENT_SYSTEM.
-function buildContext(budgetTokens){
+// big for the budget — a real constraint for local WebLLM's small context window.
+// Remote calls pass budgetTokens=Infinity/consoleLines=Infinity (see agentSendRemote):
+// frontier models have plenty of room, so there's no reason to truncate what they see.
+function buildContext(budgetTokens, consoleLines){
   budgetTokens = budgetTokens || AGENT_SIGHT_BUDGET;
-  const src=serialize(nb.doc), conf=confSummary(), con=recentConsole();
+  const src=serialize(nb.doc), conf=confSummary(), con=recentConsole(consoleLines);
   const srcBudget = budgetTokens - estTokens(conf) - estTokens(con) - 120;
   const parts=[];
   if (estTokens(src) <= srcBudget)
@@ -2526,23 +2564,79 @@ function buildContext(budgetTokens){
   if (con) parts.push('Recent Console (love.js print / errors):\n'+con);
   return parts.join('\n\n');
 }
-// Keep only the last N history messages; the full current source is re-sent each
-// turn, so older turns (often re-quoting now-stale code) add little.
-function boundedHistory(msgs){ return msgs.length<=AGENT_HISTORY_MAX ? msgs : msgs.slice(-AGENT_HISTORY_MAX); }
 
+// Group-chat style routing over the two independent toggles (local VRAM-active,
+// one remote agent active). Agents only ever respond to a user message — never
+// to each other's messages — so there's no agent-to-agent reply loop:
+//   0 active: agentSend() no-ops (chat is hidden in this state, see renderAgentTab).
+//   1 active: plain two-way chat with that one agent.
+//   2 active: local agent's "prompt engineering + context curation" step is a
+//     deliberate no-op for now (send the user's raw message + full Sight,
+//     unmodified) — a sys-line marks the handoff, then the remote's real reply
+//     is what's shown. See design.md for the fuller rationale.
 async function agentSend(text){
   text=(text||'').trim();
-  if(!text || agent.generating || !agent.activeId || !agent.engine) return;
-  agent.messages.push({role:'user',content:text}); agent.messages.push({role:'assistant',content:''});
+  if(!text || agent.generating) return;
+  const hasLocal=!!agent.activeId && !!agent.engine;
+  const remoteP=remoteActiveProvider();
+  if(!hasLocal && !remoteP) return;
+  // Full history, no cap — the local model's context window is the only place
+  // that genuinely can't afford it, and buildContext's digest fallback (not
+  // history truncation) is what protects that.
+  const history=agent.messages.filter(m=>m.role==='user'||m.role==='assistant').map(m=>({role:m.role,content:m.content}));
+  agent.messages.push({role:'user',from:'user',content:text});
   agent.generating=true; renderAgentMessages(); syncAgentPill();
+  const convo=[...history, {role:'user',content:text}];
+  try {
+    if(hasLocal && remoteP) await agentSendPipeline(convo, remoteP);
+    else if(hasLocal) await agentSendLocal(convo);
+    else await agentSendRemote(convo, remoteP);
+  } catch(e){ console.error('[agent] send failed',e); }
+  agent.generating=false; syncAgentPill();
+}
+async function agentSendLocal(history){
+  agent.messages.push({role:'assistant',from:'Qwen',content:''});
+  const idx=agent.messages.length-1;
+  renderAgentMessages();
   try {
     const ctx=buildContext();
-    const convo=[{role:'system',content:AGENT_SYSTEM+"\n\n"+ctx}, ...boundedHistory(agent.messages.slice(0,-1))];
+    const convo=[{role:'system',content:AGENT_SYSTEM+"\n\n"+ctx}, ...history];
     const chunks=await agent.engine.chat.completions.create({ messages:convo, stream:true });
     let acc='';
-    for await (const chunk of chunks){ acc += (chunk&&chunk.choices&&chunk.choices[0]&&chunk.choices[0].delta&&chunk.choices[0].delta.content)||''; agent.messages[agent.messages.length-1].content=acc; renderAgentMessages(); }
-  } catch(e){ agent.messages[agent.messages.length-1].content='⚠️ '+agentErr(e); console.error('[WebLLM] generate failed',e); renderAgentMessages(); }
-  agent.generating=false; syncAgentPill();
+    for await (const chunk of chunks){ acc += (chunk&&chunk.choices&&chunk.choices[0]&&chunk.choices[0].delta&&chunk.choices[0].delta.content)||''; agent.messages[idx].content=acc; renderAgentMessages(); }
+  } catch(e){ agent.messages[idx].content='⚠️ '+agentErr(e); console.error('[WebLLM] generate failed',e); renderAgentMessages(); }
+}
+// One request, no stream (each provider has a different SSE shape to parse —
+// deferred until the basic pipeline is proven out; see design.md).
+async function remoteChat(p, model, system, history){
+  const key=getSecret('agent:'+p.id+':'+p.fields[0].key);
+  const res=await fetch(p.chatUrl, { method:'POST', headers:Object.assign({'Content-Type':'application/json'}, p.authHeaders(key)), body:JSON.stringify(p.buildChatBody(model, system, history)) });
+  if(!res.ok){
+    let detail=''; try{ detail=(await res.text()).slice(0,300); }catch(e){}
+    throw new Error('HTTP '+res.status+(detail?': '+detail:''));
+  }
+  return p.parseChatReply(await res.json());
+}
+async function agentSendRemote(history, p){
+  agent.messages.push({role:'assistant',from:p.agent,content:''});
+  const idx=agent.messages.length-1;
+  renderAgentMessages();
+  try {
+    const model=remoteActiveModel(p.id);
+    if(!model) throw new Error('No model selected for '+p.agent);
+    const ctx=buildContext(Infinity, Infinity);   // remote context windows are large; send everything
+    const reply=await remoteChat(p, model, AGENT_SYSTEM+"\n\n"+ctx, history);
+    agent.messages[idx].content=reply||'(empty response)';
+  } catch(e){ agent.messages[idx].content='⚠️ '+agentErr(e); console.error('['+p.provider+'] chat failed',e); }
+  renderAgentMessages();
+}
+// The 2-agent handoff: no fabricated/hardcoded dialogue attributed to Qwen (there's
+// no real local inference in this step, so there's nothing genuine for it to say) —
+// just a sys-styled line naming the pipeline transition, then the remote's real reply.
+async function agentSendPipeline(history, p){
+  agent.messages.push({role:'sys',content:'Qwen → '+p.agent});
+  renderAgentMessages();
+  await agentSendRemote(history, p);
 }
 async function initAgent(){
   renderAgentTab();
