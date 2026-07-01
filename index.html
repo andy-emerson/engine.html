@@ -459,7 +459,6 @@ body { font-family: var(--font-sans); background: var(--bg-tertiary); color: var
 .chat-msg { font-size: 12px; line-height: 1.5; padding: 7px 9px; border-radius: 8px; white-space: pre-wrap; word-break: break-word; max-width: 94%; }
 .chat-msg.user { background: var(--bg-tertiary); color: var(--text-primary); align-self: flex-end; }
 .chat-msg.bot { background: var(--bg-secondary); color: var(--text-primary); align-self: flex-start; }
-.chat-msg.sys { color: var(--text-tertiary); font-style: italic; align-self: center; text-align: center; font-size: 11px; }
 .chat-from { display: block; font-size: 10px; font-weight: 700; letter-spacing: .02em; opacity: .5; margin-bottom: 3px; }
 .chat-input { display: flex; gap: 5px; padding: 8px; }
 /* Draggable divider between the messages and the input — drag up to grow the field. */
@@ -2135,7 +2134,8 @@ function renderLibs(){
 /* ════════════════════════════════════════════════════════════════════════════
  * 6c. AGENT — local WebLLM (in-browser model manager + streaming chat, ported
  *     from the oracle) and remote API agents (Anthropic/OpenAI/xAI), unified by
- *     a group-chat-style router (agentSend) that fans out to 0/1/2 active agents.
+ *     a common router (agentSend). Exactly one agent — local or remote — can be
+ *     the active chat agent at a time; activating either deactivates the other.
  * ════════════════════════════════════════════════════════════════════════════ */
 /* Models: exactly the oracle's three Qwen2.5-Coder sizes (q4f16_1). One shared
  * MLCEngine holds one model at a time. Setup (GPU + install/activate/remove) lives
@@ -2301,17 +2301,21 @@ async function agentSetDisk(id){
   agent.busyId=null; agent.op=''; agent.progress=''; renderAgentLocal(); renderAgentTab(); renderStorage(); syncAgentPill();
 }
 // Load/unload the on-disk model into VRAM (the toggle). Loading is fast when the
-// model is already cached on disk.
+// model is already cached on disk. Exactly one agent (local or remote) can be
+// the active chat agent at a time — activating local here deactivates whichever
+// remote agent was active (its key/model selection is untouched, just not "the"
+// chat agent); the symmetric case (activating a remote agent unloads local, but
+// leaves it on disk) lives in renderAgentRemote()'s activate handler.
 async function agentToggleVram(on){
   if(agent.busyId) return;
   const id=[...agent.installed][0]; if(on && !id) return;
   agent.busyId=id||'vram'; agent.op=on?'activate':'deactivate'; agent.error=''; agent.progress=''; renderAgentLocal(); syncAgentPill();
   try {
     const eng=await agentEnsureEngine();
-    if(on){ eng.setInitProgressCallback(agentOnProgress); await eng.reload(id, { context_window_size: AGENT_CTX_WINDOW }); agent.activeId=id; }
+    if(on){ eng.setInitProgressCallback(agentOnProgress); await eng.reload(id, { context_window_size: AGENT_CTX_WINDOW }); agent.activeId=id; lsSet('loveide:activeRemoteAgent',''); }
     else { try{ await eng.unload(); }catch(e){} agent.activeId=null; }
   } catch(e){ agent.error=agentErr(e); console.error('[WebLLM] vram-toggle failed',e); }
-  agent.busyId=null; agent.op=''; agent.progress=''; renderAgentLocal(); renderAgentTab(); syncAgentPill();
+  agent.busyId=null; agent.op=''; agent.progress=''; renderAgentLocal(); renderAgentRemote(); renderAgentTab(); syncAgentPill();
 }
 function syncAgentPill(){
   if (agent.generating||agent.busyId) setAgent('loading');
@@ -2475,7 +2479,14 @@ function renderAgentRemote(){
 
     const ready=st.status==='ready'&&st.models.length>0;
     const cb=elem('input',{type:'checkbox',class:'switch',title:'Active'}); cb.checked=activeId===id; cb.disabled=!ready;
-    cb.onchange=()=>{ lsSet('loveide:activeRemoteAgent', cb.checked?id:''); renderAgentRemote(); renderAgentTab(); };
+    // Exactly one agent active at a time — activating a remote agent unloads
+    // Qwen from VRAM first (agentToggleVram(false) — disk cache untouched), the
+    // symmetric case to agentToggleVram(true) clearing loveide:activeRemoteAgent.
+    cb.onchange=async()=>{
+      if(cb.checked && agent.activeId) await agentToggleVram(false);
+      lsSet('loveide:activeRemoteAgent', cb.checked?id:'');
+      renderAgentRemote(); renderAgentTab();
+    };
     wrap.appendChild(elem('div',{class:'agent-row'},[sel,cb]));
 
     if(st.status==='error') wrap.appendChild(elem('div',{style:'font-size:11px;color:var(--fn-red);margin-top:4px;word-break:break-word',text:st.error}));
@@ -2484,8 +2495,8 @@ function renderAgentRemote(){
   });
 }
 
-// Agent tab = chat. Available once either toggle (local VRAM-active, one remote
-// agent active) is on — the 0/1/2-agent routing lives in agentSend.
+// Agent tab = chat. Available once either toggle (local VRAM-active, or a
+// remote agent active — the two are mutually exclusive) is on.
 function renderAgentTab(){
   const body=$('#assistant-body'); if(!body) return;
   const hasLocal=!!agent.activeId, remoteP=remoteActiveProvider();
@@ -2497,8 +2508,8 @@ function renderAgentTab(){
   }
   body.innerHTML='';
   const msgs=elem('div',{class:'chat-msgs',id:'agent-messages'});
-  const names=[hasLocal?'Qwen':null, remoteP?remoteP.agent:null].filter(Boolean).join(' + ');
-  const ta=elem('textarea',{rows:'1',placeholder:'Ask '+names+'…',id:'agent-input'});
+  const name=hasLocal?'Qwen':remoteP.agent;
+  const ta=elem('textarea',{rows:'1',placeholder:'Ask '+name+'…',id:'agent-input'});
   const send=elem('button',{html:svg(agent.generating?'stop':'send'),title:agent.generating?'Stop':'Send',id:'agent-send'});
   const submit=()=>{ if(!agent.generating){ agentSend(ta.value); ta.value=''; } };
   send.onclick=()=>{ if(agent.generating) agentCancel(); else submit(); };
@@ -2560,16 +2571,13 @@ function clearChat(){
 }
 function copyChat(){
   if (!agent.messages.length){ toast('Conversation is empty'); return; }
-  const text=agent.messages.map(m=> m.role==='sys' ? '['+m.content+']' : (m.from||m.role)+': '+m.content).join('\n\n');
+  const text=agent.messages.map(m=>(m.from||m.role)+': '+m.content).join('\n\n');
   navigator.clipboard.writeText(text).then(()=>toast('Conversation copied')).catch(()=>toast('Copy failed','err'));
 }
 function renderAgentMessages(){
   const box=$('#agent-messages'); if(!box) return; box.innerHTML='';
   if(!agent.messages.length){ box.appendChild(panePlaceholder('message-code','Ask about your game','It can see your main.lua, conf, and recent console')); return; }
   agent.messages.forEach(m=>{
-    // sys = a code-generated pipeline notice (e.g. the 2-agent handoff), not
-    // dialogue attributed to any agent — rendered plain, no markdown/label.
-    if(m.role==='sys'){ box.appendChild(elem('div',{class:'chat-msg sys',text:m.content})); return; }
     const el=elem('div',{class:'chat-msg '+(m.role==='user'?'user':'bot')});
     if(m.role==='assistant' && m.from) el.appendChild(elem('div',{class:'chat-from',text:m.from}));
     const bodyEl=elem('div',{class:'out-md'});
@@ -2597,7 +2605,7 @@ function confSummary(){
 }
 // Recent love.js Console output (print + errors) — the witness channel. Read from
 // the Console DOM so it reflects exactly what the human sees. maxLines=Infinity
-// (remote/pipeline sends) returns everything since the last Run/clear — slice(-Infinity)
+// (remote sends) returns everything since the last Run/clear — slice(-Infinity)
 // clamps to 0, i.e. the whole array; no special-casing needed.
 function recentConsole(maxLines){
   maxLines=maxLines||14;
@@ -2633,15 +2641,11 @@ function buildContext(budgetTokens, consoleLines){
   return parts.join('\n\n');
 }
 
-// Group-chat style routing over the two independent toggles (local VRAM-active,
-// one remote agent active). Agents only ever respond to a user message — never
-// to each other's messages — so there's no agent-to-agent reply loop:
-//   0 active: agentSend() no-ops (chat is hidden in this state, see renderAgentTab).
-//   1 active: plain two-way chat with that one agent.
-//   2 active: local agent's "prompt engineering + context curation" step is a
-//     deliberate no-op for now (send the user's raw message + full Sight,
-//     unmodified) — a sys-line marks the handoff, then the remote's real reply
-//     is what's shown. See design.md for the fuller rationale.
+// Chat routing. Exactly one agent can be active at a time — local (VRAM) and
+// remote (Settings → Agentic Coding) toggles are mutually exclusive by
+// construction (see agentToggleVram / renderAgentRemote's activate handler), so
+// this is a plain two-way conversation with whichever one is on, never a
+// multi-agent handoff.
 // Swaps the send button between Send and Stop — called only at generation
 // start/stop (not every streamed chunk; renderAgentMessages() already does
 // that far too often to also rebuild this on every call).
@@ -2660,20 +2664,19 @@ async function agentSend(text){
   // history truncation) is what protects that.
   const history=agent.messages.filter(m=>m.role==='user'||m.role==='assistant').map(m=>({role:m.role,content:m.content}));
   // cancel = this turn's cancellation token: turnStart lets agentCancel() drop
-  // everything this turn appended (user msg, sys line, placeholder — however
-  // many) in one slice; text lets it restore what you typed; abortController is
-  // filled in by whichever leg (local/remote) actually starts running. Captured
-  // as myCancel too — agentCancel() flips agent.generating back to false and
-  // lets a NEW turn start before this async chain has actually unwound (waiting
-  // on interruptGenerate()/an aborted fetch to settle), so the trailing cleanup
+  // everything this turn appended (user msg, placeholder) in one slice; text
+  // lets it restore what you typed; abortController is filled in by whichever
+  // leg (local/remote) actually starts running. Captured as myCancel too —
+  // agentCancel() flips agent.generating back to false and lets a NEW turn
+  // start before this async chain has actually unwound (waiting on
+  // interruptGenerate()/an aborted fetch to settle), so the trailing cleanup
   // below must only touch shared agent state if it still belongs to THIS turn.
   const myCancel=agent.cancel={ turnStart:agent.messages.length, text, cancelled:false, abortController:null };
   agent.messages.push({role:'user',from:'user',content:text});
   agent.generating=true; renderAgentMessages(); syncAgentPill(); syncSendButton();
   const convo=[...history, {role:'user',content:text}];
   try {
-    if(hasLocal && remoteP) await agentSendPipeline(convo, remoteP, myCancel);
-    else if(hasLocal) await agentSendLocal(convo, myCancel);
+    if(hasLocal) await agentSendLocal(convo, myCancel);
     else await agentSendRemote(convo, remoteP, myCancel);
   } catch(e){ if(!myCancel.cancelled) console.error('[agent] send failed',e); }
   if (agent.cancel===myCancel){ agent.generating=false; agent.cancel=null; syncAgentPill(); syncSendButton(); }
@@ -2721,7 +2724,7 @@ async function agentSendLocal(history, myCancel){
   } catch(e){ if(!myCancel.cancelled){ agent.messages[idx].content='⚠️ '+agentErr(e); console.error('[WebLLM] generate failed',e); renderAgentMessages(); } }
 }
 // One request, no stream (each provider has a different SSE shape to parse —
-// deferred until the basic pipeline is proven out; see design.md).
+// deferred until basic remote chat is proven out; see design.md).
 async function remoteChat(p, model, system, history, signal){
   const key=getSecret('agent:'+p.id+':'+p.fields[0].key);
   const res=await fetch(p.chatUrl, { method:'POST', headers:Object.assign({'Content-Type':'application/json'}, p.authHeaders(key)), body:JSON.stringify(p.buildChatBody(model, system, history)), signal });
@@ -2747,15 +2750,6 @@ async function agentSendRemote(history, p, myCancel){
     agent.messages[idx].content=reply||'(empty response)';
   } catch(e){ if(!myCancel.cancelled){ agent.messages[idx].content='⚠️ '+agentErr(e); console.error('['+p.provider+'] chat failed',e); } }
   renderAgentMessages();
-}
-// The 2-agent handoff: no fabricated/hardcoded dialogue attributed to Qwen (there's
-// no real local inference in this step, so there's nothing genuine for it to say) —
-// just a sys-styled line naming the pipeline transition, then the remote's real reply.
-async function agentSendPipeline(history, p, myCancel){
-  if (myCancel.cancelled) return;
-  agent.messages.push({role:'sys',content:'Qwen → '+p.agent});
-  renderAgentMessages();
-  await agentSendRemote(history, p, myCancel);
 }
 async function initAgent(){
   renderAgentTab();
