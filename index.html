@@ -1729,6 +1729,7 @@ function renderNotebook(){
   });
   renderOutline();
   saveSoon();
+  upgradeAllEditors();   // the destroy() above dropped every CM view back to a plain textarea; re-upgrade (no-op if offline/already loaded)
 }
 
 /* ── Drag-to-reorder (ported from the oracle) ─────────────────────────────────
@@ -2507,7 +2508,6 @@ function renderAgentMessages(){
     const bodyEl=elem('div');
     if(m.role==='user') bodyEl.textContent=m.content; else bodyEl.innerHTML = m.content? renderMarkdownHTML(m.content) : '<span style="opacity:.5">…</span>';
     el.appendChild(bodyEl);
-    if(m.role==='assistant' && m.content){ const cm=/```lua\s*([\s\S]*?)```/.exec(m.content); if(cm){ const btn=elem('button',{class:'kv-btn',html:svg('insert')+'Insert as cell',style:'margin-top:6px'}); btn.onclick=()=>{ addCell('lua'); const c=nb.doc.cells[nb.doc.cells.length-1]; c.code=cm[1].replace(/\s+$/,''); renderNotebook(); toast('Inserted as new cell'); }; el.appendChild(btn); } }
     box.appendChild(el);
   });
   box.scrollTop=box.scrollHeight;
@@ -3016,8 +3016,7 @@ async function boot(){
   restorePanes();
   registerIsolationSW();
   if (!isolated() && location.protocol!=='file:'){ setRuntime('idle'); }
-  // try to upgrade Lua editors to CodeMirror (no-op if offline)
-  upgradeAllEditors();
+  // renderNotebook() above already upgraded the Lua editors to CodeMirror (no-op if offline)
   // expose for console / oracle comparisons
   window.engine = { parse, serialize, normalizeGlue, renderMarkdownHTML, runSelfTests, get doc(){return nb.doc;} };
 }
