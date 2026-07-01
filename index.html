@@ -508,8 +508,18 @@ body { font-family: var(--font-sans); background: var(--bg-tertiary); color: var
 .out-md ul, .out-md ol { padding-left: 22px; font-size: 14px; margin-bottom: 9px; }
 .out-md li { margin-bottom: 3px; line-height: 1.6; }
 .out-md code { font-family: var(--font-mono); font-size: 12px; background: var(--bg-secondary); padding: 1px 5px; border-radius: 4px; }
-.out-md pre { background: var(--bg-secondary); padding: 10px 12px; border-radius: var(--radius-md); overflow-x: auto; margin-bottom: 10px; }
+.out-md pre { background: var(--bg-secondary); padding: 10px 12px; border-radius: var(--radius-md); overflow-x: auto; margin-bottom: 10px; position: relative; }
 .out-md pre code { background: none; padding: 0; }
+/* Lua highlighting inside rendered markdown (chat replies) — a small standalone
+ * tokenizer (highlightLua), not CodeMirror: cheap enough to re-run on every
+ * streaming chunk, and doesn't need the CDN. Same theme vars as the CM editor. */
+.lua-kw  { color: var(--syntax-keyword); }
+.lua-str, .lua-num { color: var(--syntax-string); }
+.lua-cmt { color: var(--text-tertiary); font-style: italic; }
+.code-copy-btn { position: absolute; top: 7px; right: 7px; opacity: 0; transition: opacity .15s; background: var(--bg-primary); border: .5px solid var(--border-light); border-radius: 6px; color: var(--text-tertiary); padding: 3px 6px; cursor: pointer; display: flex; align-items: center; }
+.out-md pre:hover .code-copy-btn { opacity: 1; }
+.code-copy-btn:hover { color: var(--text-primary); border-color: var(--border-medium); background: var(--bg-secondary); }
+.code-copy-btn svg { width: 13px; height: 13px; }
 .out-md blockquote { border-left: 3px solid var(--border-medium); padding-left: 12px; color: var(--text-secondary); margin-bottom: 9px; }
 .out-md a { color: inherit; text-decoration: underline; }  /* TEMP: underline only — link colour deferred (see TODO) */
 .out-md hr { border: none; border-top: .5px solid var(--border-light); margin: 14px 0; }
@@ -2496,6 +2506,40 @@ function renderAgentTab(){
   body.appendChild(msgs); body.appendChild(resizer); body.appendChild(elem('div',{class:'chat-input'},[ta,send]));
   renderAgentMessages();
 }
+// Lightweight Lua highlighter for chat code blocks — display-only, not CodeMirror.
+// renderAgentMessages() re-renders on every streamed chunk (local chat), so this
+// needs to be cheap and dependency-free; a full CM editor instance per code block
+// would mean tearing down/rebuilding on every token. Every ```-fenced block in a
+// chat reply is treated as Lua regardless of its fence tag — this is a Lua-only
+// IDE, and the built-in markdown fallback (offline/no CDN) drops fence tags
+// entirely, so a language-agnostic default is the only thing that works either way.
+const LUA_KEYWORDS = new Set('and break do else elseif end false for function goto if in local nil not or repeat return then true until while'.split(' '));
+const LUA_TOKEN_RE = /--\[(=*)\[[\s\S]*?\]\1\]|--[^\n]*|\[(=*)\[[\s\S]*?\]\2\]|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|\b\d+\.?\d*(?:[eE][+-]?\d+)?\b|\b[A-Za-z_]\w*\b/g;
+function highlightLua(src){
+  let out='', last=0, m;
+  LUA_TOKEN_RE.lastIndex=0;
+  while((m=LUA_TOKEN_RE.exec(src))){
+    out += escapeHtml(src.slice(last, m.index));
+    const tok=m[0];
+    const cls = tok.startsWith('--') ? 'lua-cmt' : (tok[0]==='"'||tok[0]==="'"||tok[0]==='[') ? 'lua-str' : /^\d/.test(tok) ? 'lua-num' : LUA_KEYWORDS.has(tok) ? 'lua-kw' : null;
+    out += cls ? '<span class="'+cls+'">'+escapeHtml(tok)+'</span>' : escapeHtml(tok);
+    last = m.index + tok.length;
+  }
+  return out + escapeHtml(src.slice(last));
+}
+// Re-highlights every <pre><code> block under container (as Lua) and adds a
+// hover-reveal copy button per block. Runs on rendered DOM, not markdown source,
+// so it works the same whether marked.js or the built-in fallback produced it.
+function decorateCodeBlocks(container){
+  container.querySelectorAll('pre').forEach(pre=>{
+    const code=pre.querySelector('code'); if(!code) return;
+    const raw=code.textContent;
+    code.innerHTML=highlightLua(raw);
+    const btn=elem('button',{class:'code-copy-btn',html:svg('copy'),title:'Copy'});
+    btn.onclick=()=>{ navigator.clipboard.writeText(raw).then(()=>toast('Copied')).catch(()=>toast('Copy failed','err')); };
+    pre.appendChild(btn);
+  });
+}
 function renderAgentMessages(){
   const box=$('#agent-messages'); if(!box) return; box.innerHTML='';
   if(!agent.messages.length){ box.appendChild(panePlaceholder('message-code','Ask about your game','It can see your main.lua, conf, and recent console')); return; }
@@ -2505,8 +2549,9 @@ function renderAgentMessages(){
     if(m.role==='sys'){ box.appendChild(elem('div',{class:'chat-msg sys',text:m.content})); return; }
     const el=elem('div',{class:'chat-msg '+(m.role==='user'?'user':'bot')});
     if(m.role==='assistant' && m.from) el.appendChild(elem('div',{class:'chat-from',text:m.from}));
-    const bodyEl=elem('div');
-    if(m.role==='user') bodyEl.textContent=m.content; else bodyEl.innerHTML = m.content? renderMarkdownHTML(m.content) : '<span style="opacity:.5">…</span>';
+    const bodyEl=elem('div',{class:'out-md'});
+    if(m.role==='user') bodyEl.textContent=m.content;
+    else { bodyEl.innerHTML = m.content? renderMarkdownHTML(m.content) : '<span style="opacity:.5">…</span>'; decorateCodeBlocks(bodyEl); }
     el.appendChild(bodyEl);
     box.appendChild(el);
   });
