@@ -61,7 +61,7 @@ Verified against the code, not just stated:
 The chat still has **no Hands** — everything in the table below is what's left.
 
 ### Shippable milestones
-- **Backend interface + Remote — done.** Project-aware chat on a frontier remote model, the 80/20, now shipped (see Already built). Streaming for the remote leg and tool support in `remoteChat()` are left for when Hands lands.
+- **Backend interface + Remote — done.** Project-aware chat on a frontier remote model, the 80/20, now shipped (see Already built). Streaming for the remote leg and tool support in `remoteChat()` are left for the read-only tool loop session (the Sight capstone — see the sequencing decision below), whose plumbing Hands later reuses.
 - After **Write/run tools + scaffolding UI** — full Hands + scaffolding.
 
 ### Sequencing decision — Sight before Hands
@@ -84,9 +84,11 @@ still lands before ship. Scoping so far (from the design conversation):
 - Remaining substantive Sight candidates: the **read-only tool loop**
   (reframed as pull-based Sight — the agent filling gaps in its own picture;
   zero mutation; the same plumbing later Hands work reuses, with remote
-  streaming riding along since it reworks the same `remoteChat()` path), and
-  the **runtime debug bridge** (Backlog; live game state — still an open
-  design call).
+  streaming riding along since it reworks the same `remoteChat()` path), the
+  **runtime debug bridge** (Backlog; live game state — still an open design
+  call), and the **Sight freshness browser test** (Backlog — user-reported
+  mid-chat staleness; the pipeline is provably fresh headless, so the cause
+  is browser-only).
 
 ### Steps, ranked
 
@@ -117,6 +119,7 @@ Row order is the recommended build order (see the legend for how it's derived).
 | Low | Low | Additional remote agents (Mistral, Meta Llama, Gemini) | Agentic Coding's API Agents list is scoped to Anthropic/OpenAI/xAI — the three the author can currently test with a real key. Mistral, Meta Llama API, and Google Gemini are real, viable providers (all confirmed CORS-reachable for both chat and `/models`-list endpoints this session) but untested, so left out for now rather than shipped unverified. | Add each to `AGENT_PROVIDERS` (id, agent/provider names, `fields`, `listModelsUrl`, `authHeaders`, `parseModels`) once testable — Anthropic/OpenAI/xAI already show the pattern. Gemini needs a different `authHeaders`/`parseModels` either way (`x-goog-api-key` header, model-in-URL-path request shape, different response JSON) — not a drop-in of the other four's OpenAI-compatible shape. |
 | Medium | Medium | Runtime debug bridge / live inspector | Variables/Tables are static (parsed source only); no way to see live values while a game runs, which also blocks any future "live-tuning" panel (the better alternative to naive hot-reload — see below). | Inject a small module into the `.love` to surface live values / a Lua REPL in Console; later could back interactive tuning controls in the Variables panel. |
 | Medium | Medium | love.js boot — confirm cross-browser | The `<base href>` fix is browser-verified once, on one browser. Can't be exercised in the dev sandbox (CDN egress blocked). Matters more once the Agent plan's Hands items lean on the boot/error signal for witnessing. | Manual sweep across Chrome/Firefox/Safari on the live GitHub Pages deploy. |
+| Medium | Low | Sight freshness — browser test | User-reported: after the first chat message, the agent seems to see only the chat updating — not later edits to main.lua/console/conf. The send pipeline is provably fresh headless (two-turn wire-level simulation through the real extracted `agentSend`→`agentSendRemote`→`remoteChat`: turn 2's captured request body carries the edited source, new conf, new console, exactly one system message; CM's `updateListener` also writes `cell.code` per keystroke). So the cause is browser-only: either **model anchoring** (history quotes the old code; the system prompt never says the fresh state supersedes the conversation) or a real **editor→doc sync failure** headless can't reach (CodeMirror is CDN-only in the sandbox). | Two in-app diagnostics: (1) edit a cell, then run `engine.serialize(engine.doc)` in DevTools — edit present ⇒ doc is live ⇒ anchoring; (2) DevTools Network tab → inspect the chat request's system field — that is literally what the model saw. If anchoring: reword `AGENT_SYSTEM` to state the project state below is current as of this message and supersedes anything earlier in the conversation, including the assistant's own prior replies. If sync bug: hunt it from the failing layer. |
 | Medium | Low | Automated integration tests | Several claims (love.js boot, CDN loads, WebLLM) are permanently stuck at "browser-only" on the claim ladder — no automated way to exercise them. Headless doc-model self-tests exist but don't cover this surface. | A Playwright suite driving the real `index.html` through load/edit/toggle/Run/Export. Dev-side only; the shipped app stays single-file. |
 | Low | Medium | Snapshot triggers & caps — revisit policy | The two original complaints here are already fixed: `pushHistory()` dedupes against the most recent entry and caps History at 30. What's still open is whether a flat cap is the right long-term policy, and whether a `trigger` field is worth adding. | A `trigger` field on the history schema for keyed-slot upsert (time-based saves overwrite, manual/event saves accumulate) — only useful if time-based autosave ever returns. Purely speculative now. |
 | Low | Medium | Import an existing project | No way to bring in an existing `.love` (zip w/ assets/libs/conf) — `Open` already handles a bare `.lua` file via raw text, but nothing more. | LoveIDE-shaped analog of the oracle's multi-format import: unzip, split into `main.lua` + assets + libs + conf. |
