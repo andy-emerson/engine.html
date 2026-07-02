@@ -67,12 +67,22 @@ The chat still has **no Hands** — everything in the table below is what's left
 
 Decided by the user: **perfect Sight before implementing Hands** — do one thing
 well instead of two things poorly, then build Hands on really good Sight. Hands
-still lands before ship. The Steps table below predates this decision, so its
-Hands-first row order is superseded until the Sight slice is scoped. Candidates
-already on file: Open Question 4's context gaps (token-accurate counting,
-focused/referenced-cell relevance, per-backend budgets), the runtime-error
-witnessing gap (Backlog), and the runtime debug bridge (Backlog). Scoping that
-slice is the next design conversation.
+still lands before ship. Scoping so far (from the design conversation):
+
+- **Console is the channel.** Runtime-health info reaches the agent through the
+  Console, not as separate Sight fields. The runtime-error witnessing gap is
+  therefore a status-pill/UI fix (Backlog), not agent work — the Console already
+  carries post-boot errors; only `nb.runtime` lies.
+- **No arbitrary limits, even for local** (supersedes the old Open Question 4 —
+  see its entry below): drop local's 14-line Console tail and the
+  `AGENT_SIGHT_BUDGET`/`luaDigest` source gate, so local Sight = remote Sight =
+  everything. Token counting and relevance/curation are deferred accordingly.
+- Remaining substantive Sight candidates: the **read-only tool loop**
+  (reframed as pull-based Sight — the agent filling gaps in its own picture;
+  zero mutation; the same plumbing later Hands work reuses, with remote
+  streaming riding along since it reworks the same `remoteChat()` path), and
+  the **runtime debug bridge** (Backlog; live game state — still an open
+  design call).
 
 ### Steps, ranked
 
@@ -92,7 +102,7 @@ Row order is the recommended build order (see the legend for how it's derived).
 1. **Runtime Sight:** static source + Console only, or invest in a live **debug bridge** into the running game (read `_G`/watches each frame)? See the matching Backlog row.
 2. **Witnessing richness:** beyond fixing the boots-vs-errors gap (Backlog), is that signal enough to grade claims long-term, or do we want richer ones (canvas screenshot diff, FPS, agent-written assertions)?
 3. **Secrets/remote — partly resolved.** Storage is the existing encrypted-at-rest layer (device-bound); the Secrets UI question is settled — per-agent key fields in Settings → Agentic Coding (see Already built), not a generic named-key manager. Still open: is device-bound persistence sufficient, or do we also want a session-only "don't save" mode?
-4. **Token/context management** — real gaps beyond what's already built: token-accurate counting (not the `chars/4` heuristic); smarter relevance when a file is large (focused/referenced cells vs. whole source); per-backend budgets. Chat history is not capped for either backend — full history + full Console each turn — fine for remote's large context windows, but for local WebLLM a long-ish conversation (empirically closer to a dozen messages than "long" — see the VRAM budget tool bullet above) exceeds `context_window_size` and errors out (a clean, catchable `ContextWindowSizeExceededError`, not silent corruption — verified against the real WebLLM source). Reintroducing a local-only history cap/trim would fix this more directly; **explicitly declined for now** in favor of the VRAM budget tool (give Qwen more room instead of making it forget) — may be revisited later ("we shall see," per the user).
+4. **Token/context management — resolved for now by a broader decision: no arbitrary limits, even for local.** The user extended the declined-history-cap philosophy (give Qwen more room instead of making it forget) to every Sight channel: local should get the full source (no `AGENT_SIGHT_BUDGET` gate, no `luaDigest` fallback) and the full Console (no 14-line tail), same as remote. Accepted trade: local hits `ContextWindowSizeExceededError` sooner — a clean, catchable error (verified against the real WebLLM source), remedied by raising the VRAM allocation, not by trimming what the model sees; the overflow error message should name that remedy. Consequences: token-accurate counting (vs `chars/4` — measured ~21% undercount on Lua code via proxy BPE tokenizers) loses its gating rationale and survives only as a future display/metering concern (see the Backlog's cost-of-use row); relevance/curation (focused cells vs whole source) is deferred as being itself an arbitrary limit — revisit only if local viability or remote cost demands it.
 
 ---
 
