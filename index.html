@@ -643,11 +643,11 @@ input[type=file] { display: none; }
             <div class="settings-section-header"><span class="settings-chev" data-ico="chevron"></span><span>Preferences</span></div>
             <div class="settings-section-body">
               <div>
-                <div class="settings-label">Paper · <span id="paper-level">Midday</span> <span id="paper-pct">12%</span></div>
+                <div class="settings-label" style="display:flex;justify-content:space-between"><span>Paper</span><span><span id="paper-level">Midday</span> <span id="paper-pct">12%</span></span></div>
                 <div class="nd-track"><input id="paper" class="nd-range" type="range" min="0" max="1" step="0.01"></div>
               </div>
               <div>
-                <div class="settings-label">Ink</div>
+                <div class="settings-label" style="display:flex;justify-content:space-between"><span>Ink</span><span id="ink-pct">50%</span></div>
                 <div class="nd-track wc"><input id="ink" class="nd-range" type="range" min="0" max="1" step="0.01"></div>
               </div>
               <div>
@@ -2616,8 +2616,8 @@ function renderAgentLocal(){
       sync();   // no DOM measurement needed, so this can run immediately — no attach-then-sync dance
 
       if(startMB!==savedMB) lsSet('loveide:qwenVramMB', String(startMB));   // no saved value yet, or a re-measurement came back smaller than a stale saved one — persist the recalculated default so agentPickContextWindow never reads a now-too-large number
-      wrap.appendChild(elem('div',{class:'agent-row-label',style:'margin-top:8px'},[
-        elem('span',{text:'Allocate to Qwen · '}), pctEl ]));
+      wrap.appendChild(elem('div',{class:'agent-row-label',style:'margin-top:8px;display:flex;justify-content:space-between'},[
+        elem('span',{text:'Allocate to Qwen'}), pctEl ]));
       wrap.appendChild(elem('div',{class:'agent-row',style:'margin-top:4px'},[track,label,setBtn]));
       // Collision banners: on a small GPU the tier's low zones can swallow the
       // whole travel — say so instead of leaving an all-yellow/all-red slider
@@ -3379,6 +3379,11 @@ async function boot(){
   try { nb.opts = Object.assign(nb.opts, JSON.parse(lsGet(LS.opts,'{}'))); } catch(e){}
   paintIcons();
   LoveIDETheme.init({ paperSlider:'#paper', inkSlider:'#ink', levelEl:'#paper-level', pctEl:'#paper-pct' });
+  // Ink % readout — wired here, not in the engine (it's inlined verbatim and
+  // only knows Paper's level/pct readouts). Reads the slider position the
+  // engine just restored, then tracks live drags.
+  { const ink=$('#ink'), ip=$('#ink-pct');
+    if(ink&&ip){ const upd=()=>{ ip.textContent=Math.round(parseFloat(ink.value)*100)+'%'; }; ink.addEventListener('input',upd); upd(); } }
   await loadAll();
   syncAgentSecrets().catch(e=>console.error('[agents] sync failed',e));   // not awaited — see function comment
   wire();
