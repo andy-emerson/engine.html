@@ -2572,7 +2572,8 @@ function renderAgentLocal(){
       slider.value=startMB;
       track.appendChild(bg); track.appendChild(fill); track.appendChild(slider);
 
-      const label=elem('span',{class:'kv-desc',style:'min-width:150px;text-align:right',text:startMB+' MB'});
+      const label=elem('span',{class:'kv-desc',style:'min-width:110px;text-align:right'});
+      const pctEl=elem('span');   // lives in the label line above the track — the Paper slider's pattern
       // Fixed width sized for its longer "✓ Saved" state — .vram-track is
       // flex:1, so if this button's own width changed between "Set" and
       // "✓ Saved" it would steal/give back space from the slider on every
@@ -2594,9 +2595,12 @@ function renderAgentLocal(){
         const pct=maxMB?Math.min(1,val/maxMB):0;
         fill.style.width='calc('+(pct*100)+'% - '+(pct*16)+'px)';
         fill.className='vram-track-fill'+(zone?' '+zone:'');
-        // The consequence, not just the input: MB placed, and the window it
-        // buys by the anchor estimate (the probe at activation has final say).
-        label.textContent=tierOnDisk ? val+' MB · ~'+Math.round(VRAM_FIGURES_CTX*val/tierOnDisk.vramMB).toLocaleString()+' tok'
+        // The consequence, not just the input: % of the measurement above the
+        // track (Paper-slider pattern), and beside it the token window the
+        // allocation buys by the anchor estimate (the probe at activation has
+        // final say). MB is still what Set persists; it shows in the toast.
+        pctEl.textContent=Math.round(pct*100)+'%';
+        label.textContent=tierOnDisk ? '~'+Math.round(VRAM_FIGURES_CTX*val/tierOnDisk.vramMB).toLocaleString()+' tokens'
                                      : val+' MB';
         // Set is disabled either because the current position is unsafe (red
         // zone — can still drag there to look, just can't commit it) or because
@@ -2612,7 +2616,8 @@ function renderAgentLocal(){
       sync();   // no DOM measurement needed, so this can run immediately — no attach-then-sync dance
 
       if(startMB!==savedMB) lsSet('loveide:qwenVramMB', String(startMB));   // no saved value yet, or a re-measurement came back smaller than a stale saved one — persist the recalculated default so agentPickContextWindow never reads a now-too-large number
-      wrap.appendChild(elem('div',{class:'agent-row-label',style:'margin-top:8px',text:'Allocate to Qwen'}));
+      wrap.appendChild(elem('div',{class:'agent-row-label',style:'margin-top:8px'},[
+        elem('span',{text:'Allocate to Qwen · '}), pctEl ]));
       wrap.appendChild(elem('div',{class:'agent-row',style:'margin-top:4px'},[track,label,setBtn]));
       // Collision banners: on a small GPU the tier's low zones can swallow the
       // whole travel — say so instead of leaving an all-yellow/all-red slider
