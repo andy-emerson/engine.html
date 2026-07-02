@@ -2320,18 +2320,19 @@ async function agentSetDisk(id){
   } catch(e){ agent.error=agentErr(e); console.error('[WebLLM] set-disk failed',e); }
   agent.busyId=null; agent.op=''; agent.progress=''; renderAgentLocal(); renderAgentTab(); renderStorage(); syncAgentPill();
 }
-// Picks context_window_size for a reload: the flat AGENT_CTX_WINDOW by default,
-// or — once Settings -> WebLLM Agents -> VRAM budget has a measurement and an
-// allocation — a size scaled from the allocated MB against this tier's own
-// known vramMB cost. This is an approximation, not an exact conversion: WebLLM
-// exposes no MB-per-token formula (checked its source — the KV cache genuinely
-// does scale with context_window_size at reload time, but nothing publishes the
-// rate), so it's backed by a real probe/retry — if the scaled guess is still
-// too big, reload() throws and we back off and try again. A failed reload can
-// take the whole GPU device down with it (WebLLM's own DeviceLostError is
-// explicitly documented as an OOM symptom), so every attempt gets a fresh
-// engine/device rather than retrying on a possibly-dead one. Falls back to the
-// known-safe flat default if every scaled attempt fails.
+// Picks context_window_size for a reload by scaling the saved VRAM allocation
+// against this tier's published vramMB cost. vramMB is the cost AT a
+// VRAM_FIGURES_CTX-token window, so alloc == vramMB requests exactly the window
+// the publisher promises fits. An approximation, not a conversion: WebLLM
+// publishes no MB-per-token rate, and the true cost is affine (fixed weights +
+// per-token KV), so linear scaling is conservative above the anchor — which is
+// why it's backed by a real probe/retry: if a guess is still too big, reload()
+// throws and we back off. A failed reload can take the whole GPU device down
+// with it (WebLLM's own DeviceLostError is explicitly documented as an OOM
+// symptom), so every attempt gets a fresh engine/device rather than retrying on
+// a possibly-dead one. NO flat fallback by design: if every attempt fails, the
+// measurement has gone stale and the honest move is to say so — never to
+// silently run at a window size the user didn't choose.
 async function agentPickContextWindow(id){
   const freshReload=async(windowSize)=>{
     agent.engine=null;
@@ -2341,14 +2342,13 @@ async function agentPickContextWindow(id){
   };
   const allocMB=parseInt(lsGet('loveide:qwenVramMB',''),10);
   const tier=AGENT_MODELS.find(m=>m.id===id);
-  if(!allocMB || !tier || !tier.vramMB){ await freshReload(AGENT_CTX_WINDOW); return AGENT_CTX_WINDOW; }
-  let candidate=Math.max(2048, Math.min(32768, Math.round(AGENT_CTX_WINDOW*allocMB/tier.vramMB)));
+  if(!allocMB || !tier || !tier.vramMB) throw new Error('No VRAM allocation — run Measure VRAM in Settings → Agentic Coding first.');
+  let candidate=Math.max(2048, Math.min(32768, Math.round(VRAM_FIGURES_CTX*allocMB/tier.vramMB)));
   for(let attempt=0; attempt<4 && candidate>=2048; attempt++){
     try{ await freshReload(candidate); return candidate; }
     catch(e){ console.error('[WebLLM] context_window_size='+candidate+' failed, backing off',e); candidate=Math.floor(candidate*0.7); }
   }
-  await freshReload(AGENT_CTX_WINDOW);
-  return AGENT_CTX_WINDOW;
+  throw new Error('Could not fit a context window into your '+allocMB+' MB allocation — the VRAM measurement may be stale. Re-measure VRAM in Settings → Agentic Coding.');
 }
 // Load/unload the on-disk model into VRAM (the toggle). Loading is fast when the
 // model is already cached on disk. Exactly one agent (local or remote) can be
@@ -2406,10 +2406,36 @@ async function measureVram(){
       renderAgentLocal();
     }
     agent.vram.resultMB=agent.vram.testedMB;
+    // Persist measurement + timestamp. localStorage's scope (origin + browser
+    // profile + machine) is exactly a VRAM measurement's validity domain — it
+    // must not follow the user to another machine, and it doesn't.
+    lsSet('loveide:qwenVramMeasuredMB', String(agent.vram.resultMB));
+    lsSet('loveide:qwenVramMeasuredAt', String(Date.now()));
   } catch(e){ agent.vram.error=agentErr(e); console.error('[VRAM test] failed',e); }
   buffers.forEach(b=>{ try{ b.destroy(); }catch(e){} });   // clear again: free every test buffer
   try{ device&&device.destroy(); }catch(e){}
   agent.vram.testing=false; renderAgentLocal();
+}
+// Human age of the persisted measurement — it's a snapshot that goes stale, so
+// the UI says when it was taken instead of implying it's current.
+function vramAgeText(){
+  const at=parseInt(lsGet('loveide:qwenVramMeasuredAt',''),10);
+  if(!at) return 'measured just now';
+  const mins=Math.round((Date.now()-at)/60000);
+  if(mins<2)   return 'measured just now';
+  if(mins<120) return 'measured '+mins+' min ago';
+  const hrs=Math.round(mins/60);
+  if(hrs<48)   return 'measured '+hrs+' h ago';
+  return 'measured '+Math.round(hrs/24)+' days ago';
+}
+// Chat-bubble text for a failed local generation. A context-window overflow
+// gets WebLLM's own exact numbers (prompt tokens vs window size — its message
+// carries them) plus the real remedy, replacing its generic advice.
+function agentFailText(e){
+  const msg=agentErr(e);
+  if(e && e.name==='ContextWindowSizeExceededError')
+    return msg.split('\n')[0]+' Raise the VRAM allocation in Settings → Agentic Coding, or Clear this chat.';
+  return msg;
 }
 function syncAgentPill(){
   if (agent.generating||agent.busyId) setAgent('loading');
@@ -2436,13 +2462,41 @@ function gpuStatusHTML(){
 // Template for every agent row (local and, later, each remote provider):
 // name label -> readiness (read-only environment info, established up front)
 // -> the control row (agent/model + activate toggle) -> status.
+let _agentInfoOpen=false;   // "?" requirements table — transient, not a persisted pref
 function renderAgentLocal(){
   const el=$('#agent-local'); if(!el) return;
   el.innerHTML='';
-  el.appendChild(elem('div',{class:'agent-field-label',text:'WebLLM Agents'}));
+  const infoBtn=elem('button',{class:'kv-btn',style:'min-width:0;padding:1px 8px',text:'?',title:'Model requirements'});
+  infoBtn.onclick=()=>{ _agentInfoOpen=!_agentInfoOpen; renderAgentLocal(); };
+  el.appendChild(elem('div',{style:'display:flex;align-items:center;justify-content:space-between'},[
+    elem('div',{class:'agent-field-label',text:'WebLLM Agents'}), infoBtn ]));
+  if(_agentInfoOpen){
+    // The two ledgers of the same model, side by side: cache = disk (Install
+    // axis, paid once), VRAM = GPU (Activate axis, paid while active — the
+    // weights load into VRAM again, plus working memory). Data straight from
+    // AGENT_MODELS; nothing new to maintain.
+    const tRow=(a,b,c,head)=>elem('div',{style:'display:flex;gap:8px;justify-content:space-between'+(head?';font-weight:600;color:var(--text-tertiary);text-transform:uppercase;font-size:10px;letter-spacing:.05em;margin-bottom:3px':'')},[
+      elem('span',{style:'flex:1',text:a}), elem('span',{style:'width:84px;text-align:right',text:b}), elem('span',{style:'width:84px;text-align:right',text:c}) ]);
+    const tbl=elem('div',{style:'margin:6px 0 8px;font-size:11px;color:var(--text-secondary);border:.5px solid var(--border-faint);border-radius:var(--radius-md);padding:8px 10px'});
+    tbl.appendChild(tRow('Model','Min cache','Min VRAM',true));
+    AGENT_MODELS.forEach(m=>{
+      const size=(m.id.match(/-(\d+(?:\.\d+)?B)-/)||[])[1]||'';
+      tbl.appendChild(tRow(size+' ('+m.tier+')', (m.diskMB>=1000?(m.diskMB/1000).toFixed(1)+' GB':m.diskMB+' MB'), m.vramMB+' MB'));
+    });
+    tbl.appendChild(elem('div',{class:'kv-desc',style:'margin-top:5px',text:'Min VRAM is the cost at a 4,096-token context window; a larger allocation buys a larger window.'}));
+    el.appendChild(tbl);
+  }
   el.appendChild(elem('div',{style:'margin:7px 0 10px;font-size:12px;line-height:1.45;color:var(--text-secondary)',html:gpuStatusHTML()}));
 
   const gpuOk=!!(agent.gpu&&agent.gpu.supported);
+  // Restore a prior session's measurement (localStorage's origin+browser+machine
+  // scope is exactly a VRAM measurement's validity domain). A measurement is
+  // required to activate at all — there is no flat-window fallback anymore.
+  if(agent.vram.resultMB==null && !agent.vram.testing){
+    const savedMeas=parseInt(lsGet('loveide:qwenVramMeasuredMB',''),10);
+    if(savedMeas>0) agent.vram.resultMB=savedMeas;
+  }
+  const measured=agent.vram.resultMB!=null;
   const onDisk=[...agent.installed][0]||'';   // at most one model on disk
   const active=!!agent.activeId, busy=!!agent.busyId;
   if(agent.error) el.appendChild(elem('div',{style:'font-size:11px;color:var(--fn-red);margin:0 0 8px;word-break:break-word',text:agent.error}));
@@ -2460,7 +2514,7 @@ function renderAgentLocal(){
   });
   sel.value=onDisk;
   sel.onchange=()=>agentSetDisk(sel.value);
-  const cb=elem('input',{type:'checkbox',class:'switch',title:'Active in VRAM'}); cb.checked=active; cb.disabled=!gpuOk||busy||!onDisk;
+  const cb=elem('input',{type:'checkbox',class:'switch',title:measured?'Active in VRAM':'Measure VRAM first'}); cb.checked=active; cb.disabled=!gpuOk||busy||!onDisk||!measured;
   cb.onchange=()=>agentToggleVram(cb.checked);
   el.appendChild(elem('div',{class:'agent-row'},[ elem('span',{class:'agent-row-label',text:'Qwen 2.5'}), sel, cb ]));
 
@@ -2470,6 +2524,7 @@ function renderAgentLocal(){
     let status, col='var(--text-tertiary)';
     if(busy){ const OP={disk:'Downloading… ',activate:'Loading… ',deactivate:'Unloading… '}; status=(OP[agent.op]||'Working… ')+(agent.progress||''); }
     else if(active){ status='Active in VRAM — ready to chat ('+agent.activeWindowSize+'-token context)'; col='var(--fn-green)'; }
+    else if(onDisk && !measured) status='On disk · measure VRAM below to enable activation';
     else if(onDisk) status='On disk · toggle to load into VRAM';
     else status='No model selected';
     el.appendChild(elem('div',{class:'kv-desc',style:'margin-top:8px;color:'+col,text:status}));
@@ -2477,8 +2532,8 @@ function renderAgentLocal(){
 
   // VRAM budget: measure free VRAM (see measureVram()'s docstring for why this
   // has to be an empirical fill-until-fail test, not a query), then let Qwen's
-  // context_window_size be scaled toward a chosen slice of it instead of the
-  // flat AGENT_CTX_WINDOW default — see agentPickContextWindow().
+  // context_window_size be scaled from the allocated slice of it — see
+  // agentPickContextWindow(). No measurement ⇒ no activation; no flat fallback.
   if(gpuOk){
     const v=agent.vram;
     const wrap=elem('div',{style:'margin-top:14px'});
@@ -2488,19 +2543,27 @@ function renderAgentLocal(){
     measureBtn.onclick=measureVram;
     let resultText='';
     if(v.testing) resultText=v.testedMB+' MB filled so far…';
-    else if(v.resultMB!=null) resultText='~'+v.resultMB+' MB free (measured just now)';
+    else if(v.resultMB!=null) resultText='~'+v.resultMB+' MB free ('+vramAgeText()+')';
     wrap.appendChild(elem('div',{class:'agent-row',style:'margin-top:7px'},[measureBtn, elem('span',{class:'kv-desc',text:resultText})]));
+    wrap.appendChild(elem('div',{class:'kv-desc',style:'margin-top:3px',text:'Tip: measure while your game is running — the result then already accounts for the game’s own VRAM.'}));
     if(v.error) wrap.appendChild(elem('div',{style:'font-size:11px;color:var(--fn-red);margin-top:4px;word-break:break-word',text:v.error}));
     if(v.resultMB!=null && !v.testing){
       const savedMB=parseInt(lsGet('loveide:qwenVramMB',''),10);
       const maxMB=Math.max(512, v.resultMB);   // slider runs the full measurement — the color zones are the warning, not a hard ceiling
-      const defaultMB=Math.round(maxMB*0.85);
+      // Two-ended zones (see vramZone): low end follows the on-disk tier and
+      // moves when the model dropdown changes; high end is the absolute reserve.
+      // A persisted allocation is never auto-corrected on tier switch — the
+      // chosen MB stands, only its color changes.
+      const tierOnDisk=AGENT_MODELS.find(m=>m.id===onDisk)||null;
+      const zoneOf=mb=>vramZone(mb, maxMB, tierOnDisk);
+      // Default: 85% of the measurement, pulled into the green band when one
+      // exists — a default should never start on a warning.
+      let defaultMB=Math.round(maxMB*0.85);
+      if(tierOnDisk){
+        const gLo=2*tierOnDisk.vramMB, gHi=maxMB-VRAM_RESERVE_WARN;
+        if(gLo<=gHi) defaultMB=Math.max(gLo, Math.min(gHi, defaultMB));
+      }
       const startMB=(savedMB && savedMB<=maxMB) ? savedMB : defaultMB;
-      // Same green/amber/red thresholds as the Storage panel's usage bar (<80% /
-      // 80–<90% / ≥90%), just against this slider's own max instead of a quota.
-      // No spatial gradient across the bar and no color transition — a hard cut
-      // exactly at the threshold, not a blend.
-      const zoneOf=mb=>{ const pct=maxMB?mb/maxMB*100:0; return pct>=90?'full':pct>=80?'warn':''; };
 
       const track=elem('div',{class:'vram-track'});
       const bg=elem('div',{class:'vram-track-bg'});
@@ -2509,7 +2572,7 @@ function renderAgentLocal(){
       slider.value=startMB;
       track.appendChild(bg); track.appendChild(fill); track.appendChild(slider);
 
-      const label=elem('span',{class:'kv-desc',style:'min-width:92px;text-align:right',text:startMB+' MB'});
+      const label=elem('span',{class:'kv-desc',style:'min-width:150px;text-align:right',text:startMB+' MB'});
       // Fixed width sized for its longer "✓ Saved" state — .vram-track is
       // flex:1, so if this button's own width changed between "Set" and
       // "✓ Saved" it would steal/give back space from the slider on every
@@ -2531,7 +2594,10 @@ function renderAgentLocal(){
         const pct=maxMB?Math.min(1,val/maxMB):0;
         fill.style.width='calc('+(pct*100)+'% - '+(pct*16)+'px)';
         fill.className='vram-track-fill'+(zone?' '+zone:'');
-        label.textContent=val+' MB ('+Math.round(pct*100)+'%)';
+        // The consequence, not just the input: MB placed, and the window it
+        // buys by the anchor estimate (the probe at activation has final say).
+        label.textContent=tierOnDisk ? val+' MB · ~'+Math.round(VRAM_FIGURES_CTX*val/tierOnDisk.vramMB).toLocaleString()+' tok'
+                                     : val+' MB';
         // Set is disabled either because the current position is unsafe (red
         // zone — can still drag there to look, just can't commit it) or because
         // there's nothing new to commit (this value is already the saved one) —
@@ -2548,6 +2614,16 @@ function renderAgentLocal(){
       if(startMB!==savedMB) lsSet('loveide:qwenVramMB', String(startMB));   // no saved value yet, or a re-measurement came back smaller than a stale saved one — persist the recalculated default so agentPickContextWindow never reads a now-too-large number
       wrap.appendChild(elem('div',{class:'agent-row-label',style:'margin-top:8px',text:'Allocate to Qwen'}));
       wrap.appendChild(elem('div',{class:'agent-row',style:'margin-top:4px'},[track,label,setBtn]));
+      // Collision banners: on a small GPU the tier's low zones can swallow the
+      // whole travel — say so instead of leaving an all-yellow/all-red slider
+      // unexplained. (No green ⇒ yellow banner; not even a yellow position ⇒
+      // red banner — the same statement as the dropdown's "too large" gray-out.)
+      if(tierOnDisk){
+        const anyGreen =(2*tierOnDisk.vramMB)<=(maxMB-VRAM_RESERVE_WARN);
+        const anySafe  =tierOnDisk.vramMB<=(maxMB-VRAM_RESERVE_REJECT);
+        if(!anySafe)       wrap.appendChild(elem('div',{style:'font-size:11px;color:var(--fn-red);margin-top:5px',text:'No workable allocation — this model does not fit on this machine alongside anything else.'}));
+        else if(!anyGreen) wrap.appendChild(elem('div',{style:'font-size:11px;color:var(--fn-amber);margin-top:5px',text:'No fully safe allocation on this GPU for this model — every position trades context room against headroom.'}));
+      }
       wrap.appendChild(elem('div',{class:'kv-desc',style:'margin-top:4px',text:'Takes effect next time Qwen is activated in VRAM.'}));
     }
     el.appendChild(wrap);
@@ -2764,19 +2840,34 @@ function renderAgentMessages(){
   });
   box.scrollTop=box.scrollHeight;
 }
-const AGENT_SYSTEM = "You are a concise expert assistant for LÖVE (Love2D) game development in Lua. Below is the project's current state — the full main.lua (the entire program; or a structural digest if it is too large), its conf, and recent Console output (love.js print/errors). Treat it as the single source of truth, freshly given each turn. Prefer short, correct answers; when giving code use ```lua fenced blocks and write idiomatic LÖVE.";
+const AGENT_SYSTEM = "You are a concise expert assistant for LÖVE (Love2D) game development in Lua. Below is the project's current state — the full main.lua (the entire program), its conf, and the Console output (love.js print/errors). Treat it as the single source of truth, freshly given each turn. Prefer short, correct answers; when giving code use ```lua fenced blocks and write idiomatic LÖVE.";
 
-// Sight budget. The window must comfortably fit a whole typical main.lua + conf +
-// recent console + a few turns + the reply. This is the flat fallback
-// context_window_size requested at reload — used as-is unless Settings ->
-// WebLLM Agents -> VRAM budget has a measurement + allocation, in which case
-// agentPickContextWindow() scales up from this baseline instead (see its
-// docstring for why: WebGPU still can't be asked "how much VRAM is free," the
-// measurement tool is what makes that scaling possible at all).
-const AGENT_CTX_WINDOW   = 8192;  // context_window_size requested when a model loads
-const AGENT_SIGHT_BUDGET = 5200;  // token budget for the Sight brief (leaves room for history + reply)
+// The context_window_size WebLLM's published vram_required_MB figures are
+// computed at — dependency-verified against the package's prebuiltAppConfig
+// (every Qwen2.5-Coder record carries overrides:{context_window_size:4096}).
+// Purely the anchor for scaling an allocation into a window size in
+// agentPickContextWindow(); NEVER requested as a window itself. There is no
+// no-measurement fallback by design: without a VRAM measurement + allocation,
+// Qwen cannot be activated at all.
+const VRAM_FIGURES_CTX = 4096;
+// Upper-end slider reserves, in absolute MB — deliberately not a % of the
+// measurement: what the reserve protects (the game preview, browser/OS
+// variance) costs roughly fixed MB regardless of GPU size, so a % rule
+// over-reserves on big cards and under-reserves on small ones.
+const VRAM_RESERVE_WARN   = 512;  // leave less free than this → yellow
+const VRAM_RESERVE_REJECT = 256;  // leave less free than this → red, Set disabled
 
-function estTokens(s){ return Math.ceil((s||'').length/4); }  // rough chars/4 heuristic
+// Slider zone for allocating `mb` of a `maxMB` measurement to `tier` (the
+// on-disk model; null → only the high-end reserve zones apply). Two-ended:
+// below the tier's published vramMB (its cost at a VRAM_FIGURES_CTX window)
+// the model can't even be placed — red; below twice that it runs but cramped —
+// yellow; at the top, the absolute reserves above.
+function vramZone(mb, maxMB, tier){
+  if(tier && tier.vramMB){ if(mb<tier.vramMB) return 'full'; if(mb<2*tier.vramMB) return 'warn'; }
+  if(maxMB-mb<VRAM_RESERVE_REJECT) return 'full';
+  if(maxMB-mb<VRAM_RESERVE_WARN) return 'warn';
+  return '';
+}
 
 // Compact conf.lua summary for Sight.
 function confSummary(){
@@ -2793,31 +2884,17 @@ function recentConsole(){
     .map(d=>{ const t=(d.textContent||'').trim(); return t?((d.classList.contains('err')?'ERROR ':d.classList.contains('warn')?'WARN ':'')+t):''; })
     .filter(Boolean).join('\n');
 }
-// Structural digest, used ONLY when the full source overflows the budget. Uses the
-// offline heuristic so it's synchronous and never waits on the luaparse CDN.
-function luaDigest(src){
-  const a=heuristicAnalyze(src), L=[];
-  if(a.functions.length) L.push('functions: '+a.functions.map(f=>(f.local?'local ':'')+f.name+f.sig+'@'+f.line).join(', '));
-  if(a.tables.length)    L.push('tables: '   +a.tables.map(t=>(t.local?'local ':'')+t.name+'@'+t.line).join(', '));
-  if(a.globals.length)   L.push('vars: '     +a.globals.map(g=>(g.local?'local ':'')+g.name+':'+g.type+'@'+g.line).join(', '));
-  return L.join('\n')||'(no top-level declarations found)';
-}
 // The brief sent as the system message each turn: full current main.lua + conf +
-// the full Console, rebuilt fresh. Digest fallback only if the source is too
-// big for the budget — a real constraint for local WebLLM's small context window.
-// Remote calls pass budgetTokens=Infinity (see agentSendRemote): frontier models
-// have plenty of room, so there's no reason to truncate what they see.
-function buildContext(budgetTokens){
-  budgetTokens = budgetTokens || AGENT_SIGHT_BUDGET;
-  const src=serialize(nb.doc), conf=confSummary(), con=recentConsole();
-  const srcBudget = budgetTokens - estTokens(conf) - estTokens(con) - 120;
-  const parts=[];
-  if (estTokens(src) <= srcBudget)
-    parts.push('Full main.lua — the entire program and single source of truth:\n```lua\n'+src+'\n```');
-  else
-    parts.push('main.lua is large (~'+estTokens(src)+' tokens, over budget); structural digest only — ask for a specific cell/region if you need the source:\n'+luaDigest(src));
-  parts.push('conf.lua: '+conf);
-  if (con) parts.push('Recent Console (love.js print / errors):\n'+con);
+// the full Console, rebuilt fresh — identical for both backends. No budgets, no
+// digests, no truncation (the no-arbitrary-limits decision). If local overflows
+// its context window, that fails as a clean ContextWindowSizeExceededError
+// carrying the exact counts (surfaced with the remedy in agentSendLocal) —
+// fixed by allocating more VRAM, never by shrinking what the model sees.
+function buildContext(){
+  const con=recentConsole();
+  const parts=['Full main.lua — the entire program and single source of truth:\n```lua\n'+serialize(nb.doc)+'\n```'];
+  parts.push('conf.lua: '+confSummary());
+  if (con) parts.push('Console since last Run/clear (love.js print / errors):\n'+con);
   return parts.join('\n\n');
 }
 
@@ -2901,7 +2978,7 @@ async function agentSendLocal(history, myCancel){
       if (myCancel.cancelled) return;   // interruptGenerate() is cooperative — stop touching messages the instant we know
       acc += (chunk&&chunk.choices&&chunk.choices[0]&&chunk.choices[0].delta&&chunk.choices[0].delta.content)||''; agent.messages[idx].content=acc; renderAgentMessages();
     }
-  } catch(e){ if(!myCancel.cancelled){ agent.messages[idx].content='⚠️ '+agentErr(e); console.error('[WebLLM] generate failed',e); renderAgentMessages(); } }
+  } catch(e){ if(!myCancel.cancelled){ agent.messages[idx].content='⚠️ '+agentFailText(e); console.error('[WebLLM] generate failed',e); renderAgentMessages(); } }
 }
 // One request, no stream — streaming is deliberately deferred because each
 // provider has a different SSE shape to parse; see design.md.
@@ -2924,7 +3001,7 @@ async function agentSendRemote(history, p, myCancel){
   try {
     const model=remoteActiveModel(p.id);
     if(!model) throw new Error('No model selected for '+p.agent);
-    const ctx=buildContext(Infinity);   // remote context windows are large; send everything
+    const ctx=buildContext();
     const reply=await remoteChat(p, model, AGENT_SYSTEM+"\n\n"+ctx, history, controller.signal);
     if (myCancel.cancelled) return;   // reply arrived after cancel already truncated agent.messages — discard, don't resurrect it
     agent.messages[idx].content=reply||'(empty response)';
