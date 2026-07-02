@@ -40,7 +40,7 @@ flowchart TD
 
     DOC --> CELLS["Cell UI<br/>CodeMirror · markdown · reorder"]
     DOC --> ANALYZE["Static analysis<br/>luaparse → symbols / tables"]
-    DOC --> AGENT["Agent<br/>Sight = serialized doc + analysis + Console"]
+    DOC --> AGENT["Agent<br/>Sight = serialized doc + conf + Console"]
 
     CELLS --> PANES["Panes & activity bars<br/>LHS setup · RHS work"]
     ANALYZE --> PANES
@@ -144,18 +144,21 @@ The oracle is built around a **DuckDB runtime substrate** shared with a
 **reactivity** branch. LoveIDE has neither, and that *simplifies* the foundation:
 
 - **No DB substrate.** `main.lua` is already the single source of truth; Sight is
-  the serialized doc + static analysis + Console, with no `_ql_*` / DuckDB layer.
+  the serialized doc + a conf summary + Console, with no `_ql_*` / DuckDB layer.
 - **No reactivity branch.** `main.lua` is one program, not a reactive cell graph,
   so the oracle's heavy "build the substrate once" step largely collapses for us.
-- **Sight is static + Console**, not live runtime values. We parse the source
-  (luaparse → Variables/Tables) rather than reading `player.x` at frame 600. A
-  live debug bridge is an open option, not a commitment.
-- **Witnessing exists but is incomplete.** The intended signal is "the `.love`
-  booted and ran without a Lua error," via the Console bridge — vs the oracle's
-  typed query/var results. Verified this only half-holds: pre-boot failures do
-  flip the app's runtime state, but a Lua error *after* the game is already
-  running only reaches the Console text, not the runtime state. Tracked in
-  `TODO.md`'s backlog.
+- **Sight is static + Console**, not live runtime values — the agent sees the
+  source and what the game prints, not `player.x` at frame 600. (The luaparse
+  Variables/Tables analysis feeds the human-facing panels only; it is NOT part
+  of Sight — there are no dependency maps or table schemas to share, because
+  those features don't exist.) A live debug bridge is an open option, not a
+  commitment.
+- **Witnessing is complete.** The signal is "the `.love` booted and ran without
+  a Lua error," via the Console bridge — vs the oracle's typed query/var
+  results. Pre-boot failures flip the app's runtime state in `run()`; post-boot
+  `err` messages now flip it too (`hookLoveMessages` — warns never flip a live
+  game, and the iframe stays up so love's error screen remains visible).
+  Headless-tested against the extracted handler; browser confirmation owed.
 - **Checkpoint/revert is nearly free** — a snapshot is `serialize(nb.doc)` (+
   conf); the History machinery already exists. No `exportDBBytes` analog.
 
@@ -180,12 +183,12 @@ Coarse, per-subsystem. Status is the highest claim rung currently justified.
 | Static analysis | **D** | luaparse AST → symbols + records-as-grid; validated in node against real luaparse. **Divergence:** oracle's Variables/Tables are *runtime*; ours are *static source*. Same UI intent, different data source. |
 | Activity panels | **B** | Outline / Libraries. **API-reference tab removed** (a 42-entry hardcoded cheat-sheet — a curated stub not worth a slot; a real reference would ride a complete love-api dataset + editor autocomplete). |
 | Package management | **B** | Adopts the oracle's *no-curated-list* model: the Libraries panel is driven by `require()` auto-detection + manual **add-by-URL**. **Divergence (design-sanctioned, Lua≠Python):** the oracle resolves packages by *name* via micropip/PyPI; Lua has no in-browser resolver (no LuaRocks), so LoveIDE resolves by *URL* — single-file pure-Lua only, vendored into the `.love`. |
-| Runtime (love.js) | **browser-only** | Boots when served cross-origin-isolated; `<base href>` fix landed and user-confirmed once ("It works!"). Cross-browser sweep still owed. Not exercisable in sandbox (CDN egress blocked). |
+| Runtime (love.js) | **browser-only** (boot) / **T** (error-state flip) | Boots when served cross-origin-isolated; `<base href>` fix landed and user-confirmed once ("It works!"). Cross-browser sweep still owed. Not exercisable in sandbox (CDN egress blocked). Post-boot Lua errors now flip `nb.runtime`/the Engine pill to `error` (warns don't; iframe stays up so love's error screen is visible) — the handler logic headless-tested, the real love.js path browser-only. |
 | Console / RHS panels | **B** | Canvas, Variables, Tables, and Console are independently-toggleable RHS panels, not mutually-exclusive tabs — any combination can be open at once, stacking top-to-bottom in activity-bar order (Canvas first, Console last) with draggable dividers between open panels; 0 open collapses the pane. Console has its own empty state plus Clear/Copy actions. Also the agent's Sight/witness channel, via `recentConsole()`. **Divergence from the earlier plan:** the oracle-inspired idea of promoting Console to a single peer tab was superseded during design — a plain tab would have fought visibility with Canvas/Variables/Tables, so the toggle/stack model replaced it. |
 | Export `.love` | **D** | JSZip build incl. main.lua + conf + assets + libs. Download path browser-only. |
 | conf.lua | **B** | `generateConfLua`, defaults, Game-settings panel. |
 | Agent — local | **browser-only** (real GPU calls) / **T** (VRAM budget's scaling+backoff logic, measurement loop's control flow) | WebLLM manager (Qwen2.5-Coder 1.5B/3B/7B), install/activate, VRAM gate, streaming chat. Untestable in sandbox (no GPU) beyond the parts factored out and headless-tested against mocks. **VRAM budget tool:** local WebLLM's real failure mode is a full chat history resent every turn against a small, fixed 8192-token window — hit within roughly a dozen messages on real testing, not "long conversations." Rather than cap history (declined by design choice, may revisit), `measureVram()` empirically fills GPU buffers (`pushErrorScope('out-of-memory')`/`popErrorScope()` — WebGPU has no live free-VRAM query, verified against `@webgpu/types`) until one fails, reports the total, and lets the allocation be split with a portion given to Qwen. `agentPickContextWindow()` scales `context_window_size` from that allocation (confirmed via WebLLM's source that the KV cache does scale with this value at reload, not a fixed pre-compiled ceiling) with probe/retry — no exact MB-to-tokens formula exists, so each attempt gets a fresh engine (a failed reload can take the GPU device down with it per WebLLM's own `DeviceLostError`), backing off and finally falling back to the flat default. A snapshot, not a guarantee: VRAM is shared system-wide and can go stale between the test and actually loading the model. |
-| Agent — Sight | **T** (branching) / **browser-only** (e2e) | `buildContext()`: full current `main.lua` + conf + recent Console each turn, luaDigest fallback when over budget for local's small window (`AGENT_SIGHT_BUDGET`); remote calls pass no budget (full source, full console, no digest). `context_window_size` raised to 8192 at local load. History is no longer capped for either backend — a deliberate simplification, see `TODO.md`'s Open Question 4 for the local-overflow risk it trades in. Full-vs-digest branching tested headless; window override is dependency-reasoned, not run. |
+| Agent — Sight | **T** (branching) / **browser-only** (e2e) | `buildContext()`: full current `main.lua` + conf summary + the **full Console since last Run/clear, both backends** each turn (the local-only 14-line tail was removed under the no-arbitrary-limits decision; chat history was never capped for either backend). The one remaining local-only gate: `AGENT_SIGHT_BUDGET` source budget with `luaDigest` fallback — kept pending the token-math decision, see `TODO.md` Open Question 4. Remote passes `Infinity` (full source, no digest). `context_window_size` 8192 baseline at local load (VRAM tool can scale it). No-tail console + full-vs-digest branching tested headless against the extracted functions. |
 | Agent — remote chat | **B** (Anthropic) / **T** (routing, other providers) | `agentSend()` routes to whichever single agent — local WebLLM or one remote provider — is currently active; `agent.messages` carries a `from` field so the transcript still shows attribution across turns where you switched agents. Local and remote are mutually exclusive by construction: `agentToggleVram(true)` clears `loveide:activeRemoteAgent`, and a remote row's activate handler unloads Qwen from VRAM first (`agentToggleVram(false)` — disk cache untouched, just not the active chat agent). **Divergence from the session's own earlier design:** a 2-agent pipeline (local relays the raw message + full Sight to remote, marked by a `sys`-styled transcript line) was built and headless-tested, then removed once live testing showed it cost real VRAM and code complexity for zero functional difference from remote-only — the local leg was always a no-op passthrough. `remoteChat()` calls Anthropic's `/v1/messages` and OpenAI/xAI's `/v1/chat/completions` directly from the browser, non-streaming. User-confirmed live in-browser against Claude (real reply rendered, including a code block). Routing (single-agent branch selection, error-body surfacing, cancel/race-safety below) tested headless against the real extracted functions. **Removed:** the pre-existing "Insert as cell" button (regex-scraped a ```lua block from a reply, dumped it verbatim as one new cell at the bottom). Live testing showed a capable remote model reliably writes whole-file replacements, and the button had no way to know that — it silently duplicated existing functions instead of replacing them, and (via `renderNotebook()`'s destroy-without-reattach bug above) transiently broke syntax highlighting. Deliberately not replaced with a smarter version yet: the standing principle is that Sight-only mode shouldn't ship *any* UI affordance that mimics hands-on doc-mutation, even a manually-clicked one — real Hands is designed to land behind Checkpoint/revert first (see `TODO.md`). A copy-to-clipboard alternative is under discussion, not yet built. **Cancel/interrupt:** Escape (input focused) or a Stop button (swapped in for Send while generating) is "pulled back" — the whole turn is dropped from `agent.messages` and your text restored to the input, not left sitting in a transcript that gets fully resent every later turn. Local uses `MLCEngine.interruptGenerate()` (dependency-verified against the real `@mlc-ai/web-llm` package); remote uses a per-turn `AbortController`. Every in-flight generation function checks its OWN turn's cancellation token, not the shared `agent.cancel` global (which may already belong to a newer turn) — headless-tested including the rapid cancel-then-resend race. |
 | Agent — Hands/Modes | **S** | Designed in `TODO.md`; not built. |
 

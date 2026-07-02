@@ -2783,13 +2783,13 @@ function confSummary(){
   const c=readConf();
   return `title=${JSON.stringify(c.title||'Untitled')} identity=${c.identity||'loveide-game'} love=${c.version||'11.5'} window=${parseInt(c.width)||800}x${parseInt(c.height)||600}${c.resizable?' resizable':''}${c.fullscreen?' fullscreen':''} vsync=${c.vsync?1:0}`;
 }
-// Recent love.js Console output (print + errors) — the witness channel. Read from
-// the Console DOM so it reflects exactly what the human sees. maxLines=Infinity
-// (remote sends) returns everything since the last Run/clear — slice(-Infinity)
-// clamps to 0, i.e. the whole array; no special-casing needed.
-function recentConsole(maxLines){
-  maxLines=maxLines||14;
-  return $$('#console > div:not(.pane-placeholder)').slice(-maxLines)
+// The love.js Console output (print + errors) — the witness channel. Read from
+// the Console DOM so it reflects exactly what the human sees: everything since
+// the last Run/clear, for BOTH backends. No line tail — arbitrary Sight limits
+// are out by design decision; if local overflows its window, the remedy is more
+// room (VRAM budget), not less truth.
+function recentConsole(){
+  return $$('#console > div:not(.pane-placeholder)')
     .map(d=>{ const t=(d.textContent||'').trim(); return t?((d.classList.contains('err')?'ERROR ':d.classList.contains('warn')?'WARN ':'')+t):''; })
     .filter(Boolean).join('\n');
 }
@@ -2802,14 +2802,14 @@ function luaDigest(src){
   if(a.globals.length)   L.push('vars: '     +a.globals.map(g=>(g.local?'local ':'')+g.name+':'+g.type+'@'+g.line).join(', '));
   return L.join('\n')||'(no top-level declarations found)';
 }
-// The curated brief sent as the system message each turn: full current main.lua +
-// conf + recent Console, rebuilt fresh. Digest fallback only if the source is too
+// The brief sent as the system message each turn: full current main.lua + conf +
+// the full Console, rebuilt fresh. Digest fallback only if the source is too
 // big for the budget — a real constraint for local WebLLM's small context window.
-// Remote calls pass budgetTokens=Infinity/consoleLines=Infinity (see agentSendRemote):
-// frontier models have plenty of room, so there's no reason to truncate what they see.
-function buildContext(budgetTokens, consoleLines){
+// Remote calls pass budgetTokens=Infinity (see agentSendRemote): frontier models
+// have plenty of room, so there's no reason to truncate what they see.
+function buildContext(budgetTokens){
   budgetTokens = budgetTokens || AGENT_SIGHT_BUDGET;
-  const src=serialize(nb.doc), conf=confSummary(), con=recentConsole(consoleLines);
+  const src=serialize(nb.doc), conf=confSummary(), con=recentConsole();
   const srcBudget = budgetTokens - estTokens(conf) - estTokens(con) - 120;
   const parts=[];
   if (estTokens(src) <= srcBudget)
@@ -2924,7 +2924,7 @@ async function agentSendRemote(history, p, myCancel){
   try {
     const model=remoteActiveModel(p.id);
     if(!model) throw new Error('No model selected for '+p.agent);
-    const ctx=buildContext(Infinity, Infinity);   // remote context windows are large; send everything
+    const ctx=buildContext(Infinity);   // remote context windows are large; send everything
     const reply=await remoteChat(p, model, AGENT_SYSTEM+"\n\n"+ctx, history, controller.signal);
     if (myCancel.cancelled) return;   // reply arrived after cancel already truncated agent.messages — discard, don't resurrect it
     agent.messages[idx].content=reply||'(empty response)';
@@ -3057,6 +3057,12 @@ function hookLoveMessages(){
       return;
     }
     logConsole('[love] '+d.msg, d.__love==='err'?'err':d.__love==='warn'?'warn':'dim');
+    // A Lua error after boot halts the game behind love's error screen, so the
+    // pill must flip too — Console text alone left nb.runtime lying ("running").
+    // Post-boot only: pre-boot failures are already handled in run(), and warns
+    // ('warn') never flip a live game. The iframe stays up so the error screen
+    // (traceback) remains visible; Run restarts fresh as usual.
+    if (d.__love==='err' && nb.runtime==='running') setRuntime('error');
   });
 }
 async function run(){
