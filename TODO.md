@@ -63,6 +63,17 @@ The chat still has **no Hands** — everything in the table below is what's left
 - **Backend interface + Remote — done.** Project-aware chat on a frontier remote model, the 80/20, now shipped (see Already built). Streaming for the remote leg and tool support in `remoteChat()` are left for when Hands lands.
 - After **Write/run tools + scaffolding UI** — full Hands + scaffolding.
 
+### Sequencing decision — Sight before Hands
+
+Decided by the user: **perfect Sight before implementing Hands** — do one thing
+well instead of two things poorly, then build Hands on really good Sight. Hands
+still lands before ship. The Steps table below predates this decision, so its
+Hands-first row order is superseded until the Sight slice is scoped. Candidates
+already on file: Open Question 4's context gaps (token-accurate counting,
+focused/referenced-cell relevance, per-backend budgets), the runtime-error
+witnessing gap (Backlog), and the runtime debug bridge (Backlog). Scoping that
+slice is the next design conversation.
+
 ### Steps, ranked
 
 Row order is the recommended build order (see the legend for how it's derived).

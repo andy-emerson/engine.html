@@ -27,17 +27,20 @@ over it. The file always stays a valid, runnable `.lua`.
 | cell UI — badge type-switch, inter-cell insert zones, hover actions, collapse, reorder | ✅ |
 | Lua editor — CodeMirror 6 (falls back to a plain editor offline) | ✅ |
 | Markdown — marked.js (falls back to a built-in renderer offline) + WYSIWYG cells | ✅ |
-| themes — warm / cool / mono × light / dark / auto (from the oracle) | ✅ |
-| persistence — localStorage autosave + snapshot history | ✅ |
+| theme — Paper × Ink parametric engine (continuous OKLCH sliders: Paper light↔dark, Ink steel↔pink) | ✅ |
+| persistence — IndexedDB autosave + snapshot history (localStorage for tiny prefs only) | ✅ |
 | asset manager (left activity bar) | ✅ basic |
+| AI assistant — local WebLLM (model manager + VRAM budget tool) and remote API agents (Anthropic / OpenAI / xAI), project-aware chat | ✅ |
 | export runnable `.love` | ✅ |
 | love.js preview (2dengine) | ⚠️ *requires cross-origin isolation — see below* |
 
-The design language and many component patterns (theme system, layout, cell
-cards, insert zones, CodeMirror/marked integration, Markdown WYSIWYG) are drawn
-from Neodide's `notebook.html` — the oracle — adapted from Python/SQL to Lua/LÖVE.
-CodeMirror, marked, and love.js load from CDNs on first use; everything else
-(including the doc model and export) works fully offline.
+The design language and many component patterns (layout, cell cards, insert
+zones, CodeMirror/marked integration, Markdown WYSIWYG) are drawn from
+Neodide's `notebook.html` — the oracle — adapted from Python/SQL to Lua/LÖVE.
+(The Paper × Ink theme engine is LoveIDE's own; it superseded the oracle's
+named-theme model.) CodeMirror, marked, JSZip, luaparse, WebLLM, and love.js
+load from CDNs on first use; editing, the doc model, and Markdown work fully
+offline, while export needs JSZip to have loaded at least once.
 
 Click **Tests** in the topbar to run the in-page round-trip / toggle self-tests.
 The doc model is also exposed on `window.engine` for the console.
@@ -61,8 +64,9 @@ page reports `crossOriginIsolated === true` and Run proceeds to build the
 e.g. `python3 -m http.server`, then open `http://localhost:8000/index.html`.
 
 When isolation is missing, **Run** prints exactly what to do in the console.
-Everything else (editing, the doc model, Markdown, and **Export .love**) works
-offline — and the exported `.love` runs in desktop LÖVE regardless.
+Everything else (editing, the doc model, Markdown, and — once JSZip has loaded —
+**Export .love**) works without it, and the exported `.love` runs in desktop
+LÖVE regardless.
 
 ---
 

@@ -17,8 +17,11 @@
 
   One source feeds many read-only projections (cell UI, static analysis, the
   agent's Sight, the .love build); only the cell editors and — eventually — the
-  agent's Hands write back. Persistence splits by data shape: structured state in
-  localStorage (doc · history · conf · theme · opts), binary assets in IndexedDB.
+  agent's Hands write back. Persistence splits by the data's nature: ALL project
+  data (doc · snapshots · libraries · conf · binary assets · encrypted secrets)
+  lives in IndexedDB, loaded to memory once at boot (loadAll); localStorage holds
+  only tiny disposable prefs (theme · opts · tab/pane state); the Cache API holds
+  regenerable downloads (model weights, love.js).
   The runtime builds a .love with JSZip and boots it in a FRESH iframe per run
   (clean love.js Module each time). See design.md for the full map + ledger.
 
@@ -32,11 +35,11 @@
   ── Contents ────────────────────────────────────────────────────────────────
   <style>  CSS, numbered 1–10:
     1 Base & reset   2 Theme variables   3 Layout   4 Topbar   5 Status bar
-    6 Notebook + cells   7 Panels (left pane)   8 Preview (right pane)
+    6 Notebook + cells   7 Panels (left pane)   8 Right pane (Canvas / Variables / Tables / Console)
     9 Markdown output   10 Toast
   <script> JS, numbered 0–10:
     0 Icons   1 Doc model   2 Markdown   3 State + persistence   4 Theme
-    5 CodeMirror   6 Cell DOM   6b Activity-bar panels   6c Agent (WebLLM)   7 Runtime
+    5 CodeMirror   6 Cell DOM   6b Activity-bar panels   6c Agent (WebLLM + remote API)   7 Runtime
     8 Export   9 Self-tests   10 Wiring + boot
   (Each section is marked by a ════ banner; this list is its table of contents.)
 -->
@@ -315,7 +318,7 @@ body { font-family: var(--font-sans); background: var(--bg-tertiary); color: var
 .list-row .x:hover { color: var(--fn-red); }
 .list-row.clickable { cursor: pointer; }
 
-/* settings (themes) */
+/* settings panel — appearance, agentic coding, game (conf.lua), storage */
 .settings-body { padding: 14px; display: flex; flex-direction: column; gap: 16px; }
 .settings-label { font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-tertiary); margin-bottom: 7px; }
 /* Collapsible Settings sections (same collapse convention as the Variables tab). */
@@ -1877,7 +1880,7 @@ function collapseAll(){
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
- * 6b. ACTIVITY-BAR PANELS — Outline, Lua libraries, LÖVE API reference
+ * 6b. ACTIVITY-BAR PANELS — Outline, Variables & Tables, Lua libraries
  * ════════════════════════════════════════════════════════════════════════════ */
 
 /* ── Outline / navigator ── */
@@ -2155,7 +2158,7 @@ function renderLibs(){
  * ════════════════════════════════════════════════════════════════════════════ */
 /* Models: exactly the oracle's three Qwen2.5-Coder sizes (q4f16_1). One shared
  * MLCEngine holds one model at a time. Setup (GPU + install/activate/remove) lives
- * in Settings → Agent; the Agent tab is the chat. WebGPU + CDN required. */
+ * in Settings → Agentic Coding; the AI assistant panel is the chat. WebGPU + CDN required. */
 const WEBLLM_CDN = 'https://esm.run/@mlc-ai/web-llm';
 const AGENT_MODELS = [
   // diskMB = download/cache size (shown in the dropdown); vramMB = memory to RUN
@@ -2170,8 +2173,9 @@ function agentErr(e){ return (e&&e.message)?e.message:String(e); }
 
 /* ── Remote agents (Settings → Agentic Coding). Each row is add-on-demand:
  *    pick a provider, Add, fill in what it needs. Committing a key fetches
- *    that provider's live model list — no hardcoded/guessed model IDs. Still
- *    NOT wired: actually chatting with one (that's the toggle's future job).
+ *    that provider's live model list — no hardcoded/guessed model IDs.
+ *    Activating a committed agent (its toggle) makes it THE chat agent:
+ *    agentSend() routes the turn to remoteChat().
  *    Scoped to the three providers testable right now; Mistral / Meta Llama /
  *    Gemini are in TODO.md, already confirmed CORS-reachable when added back. ── */
 const AGENT_PROVIDERS = [
@@ -2414,7 +2418,7 @@ function syncAgentPill(){
   else setAgent('idle');
 }
 
-// Settings → Agent: GPU status + on-disk model (dropdown) + VRAM toggle.
+// Settings → Agentic Coding: GPU status + on-disk model (dropdown) + VRAM toggle.
 // GPU readiness, rendered as HTML for inline placement under the WebLLM label
 // — the WebGPU check gates local models, so it belongs inside their block, not
 // as a separate section.
@@ -2601,8 +2605,8 @@ function renderAgentRemote(){
     ]));
 
     // Requirement fields first — the model list below only exists once a key
-    // is committed. Commit here just saves to Secrets (shell only, no fetch
-    // yet); it's the same slot the real "save + fetch models" action lands in.
+    // is committed. Commit saves each field to Secrets, then fetches this
+    // provider's live model list (agentRefreshModels).
     const fieldEls=p.fields.map(f=>{
       // autocomplete=off + a unique, non-guessable name: several near-identical
       // password fields on one page is exactly the shape browser password
@@ -2857,8 +2861,8 @@ async function agentSend(text){
   } catch(e){ if(!myCancel.cancelled) console.error('[agent] send failed',e); }
   if (agent.cancel===myCancel){ agent.generating=false; agent.cancel=null; syncAgentPill(); syncSendButton(); }
 }
-// "Pulled back" cancel: the whole turn (your message, any sys line, the
-// in-progress reply) is dropped as if it never happened, and your original
+// "Pulled back" cancel: the whole turn (your message and the in-progress
+// reply) is dropped as if it never happened, and your original
 // text goes back in the input for editing. Chosen over "leave it sent" because
 // buildContext() now resends the FULL chat history on every remote call — an
 // abandoned turn left sitting in the transcript keeps costing tokens forever,
@@ -2899,8 +2903,8 @@ async function agentSendLocal(history, myCancel){
     }
   } catch(e){ if(!myCancel.cancelled){ agent.messages[idx].content='⚠️ '+agentErr(e); console.error('[WebLLM] generate failed',e); renderAgentMessages(); } }
 }
-// One request, no stream (each provider has a different SSE shape to parse —
-// deferred until basic remote chat is proven out; see design.md).
+// One request, no stream — streaming is deliberately deferred because each
+// provider has a different SSE shape to parse; see design.md.
 async function remoteChat(p, model, system, history, signal){
   const key=getSecret('agent:'+p.id+':'+p.fields[0].key);
   const res=await fetch(p.chatUrl, { method:'POST', headers:Object.assign({'Content-Type':'application/json'}, p.authHeaders(key)), body:JSON.stringify(p.buildChatBody(model, system, history)), signal });
